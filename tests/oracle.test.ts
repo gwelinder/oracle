@@ -1,0 +1,381 @@
+import { describe, expect, test } from 'bun:test';
+import chalk from 'chalk';
+import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { buildPrompt, runOracle } from '../src/oracle.js';
+
+chalk.level = 0;
+
+async function createTempFile(contents) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'oracle-test-'));
+  const filePath = path.join(dir, 'sample.txt');
+  await writeFile(filePath, contents, 'utf8');
+  return { dir, filePath };
+}
+
+class MockStream {
+  constructor(events, finalResponse) {
+    this.events = events;
+    this.finalResponseValue = finalResponse;
+    this.aborted = false;
+  }
+
+  abort() {
+    this.aborted = true;
+  }
+
+  [Symbol.asyncIterator]() {
+    let index = 0;
+    const events = this.events;
+    return {
+      next: async () => {
+        if (this.aborted) {
+          return { done: true, value: undefined };
+        }
+        if (index >= events.length) {
+          return { done: true, value: undefined };
+        }
+        const value = events[index++];
+        return { done: false, value };
+      },
+    };
+  }
+
+  async finalResponse() {
+    return this.finalResponseValue;
+  }
+}
+
+class MockClient {
+  constructor(stream) {
+    this.stream = stream;
+    this.lastRequest = null;
+    this.responses = {
+      stream: async (body) => {
+        this.lastRequest = body;
+        return this.stream;
+      },
+    };
+  }
+}
+
+describe('buildPrompt', () => {
+  test('includes attached file sections with relative paths', async () => {
+    const { dir, filePath } = await createTempFile('hello from file');
+    try {
+      const prompt = buildPrompt('Base', [{ path: filePath, content: 'hello from file' }], dir);
+      expect(prompt).toContain('### File 1: sample.txt');
+      expect(prompt).toContain('hello from file');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('runOracle preview mode', () => {
+  test('prints request JSON when preview-json is enabled', async () => {
+    const logs = [];
+    const result = await runOracle(
+      {
+        prompt: 'Preview me',
+        model: 'gpt-5-pro',
+        preview: true,
+        previewJson: true,
+        search: true,
+      },
+      {
+        apiKey: 'sk-test',
+        log: (msg) => logs.push(msg),
+      },
+    );
+
+    expect(result.mode).toBe('preview');
+    expect(result.requestBody.tools).toEqual([{ type: 'web_search_preview' }]);
+    expect(logs[0]).toBe('Request JSON');
+    expect(logs.some((line) => line.startsWith('Oracle ('))).toBe(false);
+  });
+
+  test('omits request JSON in preview-only mode', async () => {
+    const logs = [];
+    await runOracle(
+      {
+        prompt: 'Preview only',
+        model: 'gpt-5-pro',
+        preview: true,
+      },
+      {
+        apiKey: 'sk-test',
+        log: (msg) => logs.push(msg),
+      },
+    );
+
+    expect(logs.some((line) => line.startsWith('Oracle ('))).toBe(false);
+    expect(logs.some((line) => line === 'Request JSON')).toBe(false);
+  });
+});
+
+describe('runOracle error handling', () => {
+  test('throws when estimated tokens exceed the configured budget', async () => {
+    await expect(
+      runOracle(
+        {
+          prompt: 'This is a small prompt',
+          model: 'gpt-5-pro',
+          maxInput: 1,
+        },
+        { apiKey: 'sk-test' },
+      ),
+    ).rejects.toThrow('Input too large');
+  });
+});
+
+describe('runOracle streaming output', () => {
+  test('streams deltas and prints stats', async () => {
+    const stream = new MockStream(
+      [
+        { type: 'response.output_text.delta', delta: 'Hello ', output_index: 0, content_index: 0 },
+        { type: 'response.output_text.delta', delta: 'world', output_index: 0, content_index: 0 },
+      ],
+      buildResponse(),
+    );
+    const writes = [];
+    const logs = [];
+    let ticks = 0;
+    const client = new MockClient(stream);
+    const result = await runOracle(
+      {
+        prompt: 'Say hello',
+        model: 'gpt-5-pro',
+      },
+      {
+        apiKey: 'sk-test',
+        client,
+        write: (chunk) => {
+          writes.push(chunk);
+          return true;
+        },
+        log: (msg) => logs.push(msg),
+        now: () => {
+          ticks += 1000;
+          return ticks;
+        },
+      },
+    );
+
+    expect(result.mode).toBe('live');
+    expect(writes.join('')).toBe('Hello world\n\n');
+    expect(logs[0].startsWith('Oracle (')).toBe(true);
+    expect(logs.some((line) => line.startsWith('Finished in '))).toBe(true);
+  });
+
+  test('silent mode suppresses streamed answer output', async () => {
+    const stream = new MockStream(
+      [{ type: 'response.output_text.delta', delta: 'hi', output_index: 0, content_index: 0 }],
+      buildResponse(),
+    );
+    const client = new MockClient(stream);
+    const writes = [];
+    const logs = [];
+    await runOracle(
+      {
+        prompt: 'Say nothing',
+        model: 'gpt-5-pro',
+        silent: true,
+      },
+      {
+        apiKey: 'sk-test',
+        client,
+        write: (chunk) => {
+          writes.push(chunk);
+          return true;
+        },
+        log: (msg) => logs.push(msg),
+      },
+    );
+
+    expect(writes).toEqual([]);
+    expect(logs[0].startsWith('Oracle (')).toBe(true);
+    expect(logs[1].startsWith('Finished in ')).toBe(true);
+  });
+});
+
+describe('runOracle file reports', () => {
+  test('filesReport flag logs token usage per file', async () => {
+    const cwd = '/tmp/oracle-files-report';
+    const files = {
+      [path.resolve(cwd, 'alpha.md')]: 'alpha content',
+      [path.resolve(cwd, 'beta.md')]: 'beta content that is a bit longer',
+    };
+    const fsMock = createMockFs(files);
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    const logs = [];
+    await runOracle(
+      {
+        prompt: 'Base prompt',
+        model: 'gpt-5-pro',
+        file: ['alpha.md', 'beta.md'],
+        filesReport: true,
+        silent: true,
+      },
+      {
+        apiKey: 'sk-test',
+        cwd,
+        fs: fsMock,
+        client,
+        log: (msg) => logs.push(msg),
+      },
+    );
+    expect(logs[0].startsWith('Oracle (')).toBe(true);
+    const fileUsageIndex = logs.indexOf('File Token Usage');
+    expect(fileUsageIndex).toBeGreaterThan(-1);
+    const fileLines = logs.slice(fileUsageIndex + 1, fileUsageIndex + 3);
+    expect(fileLines[0]).toContain('beta.md');
+    expect(fileLines[1]).toContain('alpha.md');
+  });
+
+  test('automatically logs file usage when attachments exceed budget and aborts before API call', async () => {
+    const cwd = '/tmp/oracle-files-overflow';
+    const files = {
+      [path.resolve(cwd, 'big.txt')]: 'a'.repeat(10000),
+    };
+    const fsMock = createMockFs(files);
+    const logs = [];
+    await expect(
+      runOracle(
+        {
+          prompt: 'Check budget',
+          model: 'gpt-5-pro',
+          file: ['big.txt'],
+          maxInput: 100,
+        },
+        {
+          apiKey: 'sk-test',
+          cwd,
+          fs: fsMock,
+          log: (msg) => logs.push(msg),
+          clientFactory: () => {
+            throw new Error('Should not create client when over budget');
+          },
+        },
+      ),
+    ).rejects.toThrow('Input too large');
+    expect(logs[0].startsWith('Oracle (')).toBe(true);
+    expect(logs.find((line) => line === 'File Token Usage')).toBeDefined();
+  });
+
+  test('accepts directories passed via --file', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'oracle-dir-'));
+    const nestedDir = path.join(dir, 'notes');
+    await mkdir(nestedDir, { recursive: true });
+    const nestedFile = path.join(nestedDir, 'note.txt');
+    await writeFile(nestedFile, 'nested content', 'utf8');
+
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    const logs = [];
+    await runOracle(
+      {
+        prompt: 'Directory test',
+        model: 'gpt-5-pro',
+        file: [dir],
+        filesReport: true,
+        silent: true,
+      },
+      {
+        apiKey: 'sk-test',
+        client,
+        log: (msg) => logs.push(msg),
+      },
+    );
+
+    expect(logs[0].startsWith('Oracle (')).toBe(true);
+    const fileLogIndex = logs.findIndex((line) => line === 'File Token Usage');
+    expect(fileLogIndex).toBeGreaterThan(-1);
+    expect(logs.some((line) => line.includes('note.txt'))).toBe(true);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+function createMockFs(fileEntries) {
+  const normalizedEntries = Object.fromEntries(
+    Object.entries(fileEntries).map(([key, value]) => [path.resolve(key), value]),
+  );
+
+  function hasDirectory(dirPath) {
+    const prefix = `${dirPath}${path.sep}`;
+    return Object.keys(normalizedEntries).some((entry) => entry.startsWith(prefix));
+  }
+
+  return {
+    async stat(targetPath) {
+      const normalizedPath = path.resolve(targetPath);
+      if (normalizedEntries[normalizedPath] != null) {
+        return {
+          isFile() {
+            return true;
+          },
+          isDirectory() {
+            return false;
+          },
+        };
+      }
+      if (hasDirectory(normalizedPath)) {
+        return {
+          isFile() {
+            return false;
+          },
+          isDirectory() {
+            return true;
+          },
+        };
+      }
+      throw Object.assign(new Error(`Missing file: ${normalizedPath}`), { code: 'ENOENT' });
+    },
+    async readFile(targetPath) {
+      const normalizedPath = path.resolve(targetPath);
+      if (!(normalizedPath in normalizedEntries)) {
+        throw Object.assign(new Error(`Missing file: ${normalizedPath}`), { code: 'ENOENT' });
+      }
+      return normalizedEntries[normalizedPath];
+    },
+    async readdir(targetPath) {
+      const normalizedPath = path.resolve(targetPath);
+      if (!hasDirectory(normalizedPath)) {
+        throw Object.assign(new Error(`Not a directory: ${normalizedPath}`), { code: 'ENOTDIR' });
+      }
+      const children = new Set();
+      const prefix = `${normalizedPath}${path.sep}`;
+      for (const entry of Object.keys(normalizedEntries)) {
+        if (entry.startsWith(prefix)) {
+          const remainder = entry.slice(prefix.length);
+          if (remainder.length === 0) {
+            continue;
+          }
+          const child = remainder.split(path.sep)[0];
+          children.add(child);
+        }
+      }
+      return Array.from(children);
+    },
+  };
+}
+
+function buildResponse() {
+  return {
+    status: 'completed',
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      reasoning_tokens: 1,
+      total_tokens: 16,
+    },
+    output: [
+      {
+        type: 'message',
+        content: [{ type: 'text', text: 'Hello world' }],
+      },
+    ],
+  };
+}

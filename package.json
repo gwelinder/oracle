@@ -1,0 +1,33 @@
+{
+  "name": "oracle",
+  "version": "1.0.0",
+  "description": "CLI wrapper around OpenAI Responses API with GPT-5 Pro and GPT-5.1 high reasoning modes.",
+  "type": "module",
+  "main": "bin/oracle.js",
+  "bin": {
+    "oracle": "./bin/oracle.js"
+  },
+  "scripts": {
+    "start": "bun ./bin/oracle.js",
+    "lint": "bun ./scripts/check.ts",
+    "test": "bun test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/steipete/oracle.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/steipete/oracle/issues"
+  },
+  "homepage": "https://github.com/steipete/oracle#readme",
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "commander": "^14.0.2",
+    "dotenv": "^17.2.3",
+    "gpt-tokenizer": "^3.4.0",
+    "openai": "^6.9.0"
+  }
+}

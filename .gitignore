@@ -1,0 +1,10 @@
+node_modules
+.DS_Store
+.env
+coverage
+npm-debug.log*
+.bun-check/
+dist/
+build/
+*.tsbuildinfo
+tsconfig.tsbuildinfo
