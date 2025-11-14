@@ -317,6 +317,47 @@ describe('renderPromptMarkdown', () => {
     }
   });
 });
+
+describe('runOracle request payload', () => {
+  test('search enabled when requested', async () => {
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    await runOracle(
+      {
+        prompt: 'Default search',
+        model: 'gpt-5-pro',
+        search: true,
+      },
+      {
+        apiKey: 'sk-test',
+        client,
+        log: () => {},
+      },
+    );
+    expect(client.lastRequest.tools).toEqual([{ type: 'web_search_preview' }]);
+  });
+
+  test('disabling search removes tools and respects maxOutput', async () => {
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    await runOracle(
+      {
+        prompt: 'No search',
+        model: 'gpt-5-pro',
+        search: false,
+        maxOutput: 1234,
+      },
+      {
+        apiKey: 'sk-test',
+        client,
+        log: () => {},
+      },
+    );
+    expect(client.lastRequest.tools).toBeUndefined();
+    expect(client.lastRequest.max_output_tokens).toBe(1234);
+  });
+});
+
 function createMockFs(fileEntries) {
   const normalizedEntries = Object.fromEntries(
     Object.entries(fileEntries).map(([key, value]) => [path.resolve(key), value]),
