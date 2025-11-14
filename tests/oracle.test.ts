@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { buildPrompt, runOracle } from '../src/oracle.js';
+import { buildPrompt, runOracle, renderPromptMarkdown } from '../src/oracle.js';
 
 chalk.level = 0;
 
@@ -296,6 +296,25 @@ describe('runOracle file reports', () => {
     expect(logs.some((line) => line.includes('note.txt'))).toBe(true);
 
     await rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe('renderPromptMarkdown', () => {
+  test('emits markdown bundle with system and files', async () => {
+    const { dir, filePath } = await createTempFile('rendered content');
+    try {
+      const markdown = await renderPromptMarkdown({
+        prompt: 'Hello world',
+        model: 'gpt-5-pro',
+        file: [filePath],
+      }, { cwd: dir });
+      expect(markdown).toContain('[SYSTEM]');
+      expect(markdown).toContain('[USER]');
+      expect(markdown).toContain('[FILE: sample.txt]');
+      expect(markdown).toContain('rendered content');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 function createMockFs(fileEntries) {

@@ -112,6 +112,7 @@ export function createFileSections(files, cwd = process.cwd()) {
       absolutePath: file.path,
       displayPath: relative,
       sectionText,
+      content: file.content,
     };
   });
 }
@@ -292,6 +293,9 @@ export async function runOracle(options, deps = {}) {
 
   if (!options.preview) {
     log(headerLine);
+    if (options.sessionId) {
+      log(`Session ID: ${options.sessionId}`);
+    }
   }
   const shouldReportFiles =
     (options.filesReport || fileTokenInfo.totalTokens > inputTokenBudget) &&
@@ -413,4 +417,20 @@ export async function runOracle(options, deps = {}) {
     usage: { inputTokens, outputTokens, reasoningTokens, totalTokens },
     elapsedMs,
   };
+}
+
+export async function renderPromptMarkdown(options, deps = {}) {
+  const cwd = deps.cwd ?? process.cwd();
+  const fsModule = deps.fs ?? fs;
+  const modelConfig = MODEL_CONFIGS[options.model] ?? MODEL_CONFIGS['gpt-5-pro'];
+  const files = await readFiles(options.file ?? [], { cwd, fsModule });
+  const sections = createFileSections(files, cwd);
+  const systemPrompt = options.system?.trim() || DEFAULT_SYSTEM_PROMPT;
+  const userPrompt = (options.prompt ?? '').trim();
+  const lines = ['[SYSTEM]', systemPrompt, ''];
+  lines.push('[USER]', userPrompt, '');
+  sections.forEach((section) => {
+    lines.push(`[FILE: ${section.displayPath}]`, section.content.trimEnd(), '');
+  });
+  return lines.join('\n');
 }
