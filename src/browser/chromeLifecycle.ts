@@ -26,7 +26,7 @@ export function registerTerminationHooks(
   logger: BrowserLogger,
 ): () => void {
   const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
-  let handling = false;
+  let handling: boolean | undefined;
 
   const handleSignal = (signal: NodeJS.Signals) => {
     if (handling) {

@@ -25,6 +25,7 @@ vi.mock('../../src/sessionManager.ts', async () => {
 import type { SessionMetadata } from '../../src/sessionManager.ts';
 import { performSessionRun } from '../../src/cli/sessionRunner.ts';
 import { OracleResponseError, OracleTransportError, runOracle } from '../../src/oracle.ts';
+import type { OracleResponse, RunOracleResult } from '../../src/oracle.ts';
 import { runBrowserSessionExecution } from '../../src/browser/sessionRunner.ts';
 import { updateSessionMetadata } from '../../src/sessionManager.ts';
 
@@ -49,12 +50,13 @@ beforeEach(() => {
 
 describe('performSessionRun', () => {
   test('completes API sessions and records usage', async () => {
-    vi.mocked(runOracle).mockResolvedValue({
+    const liveResult: RunOracleResult = {
       mode: 'live',
       usage: { inputTokens: 10, outputTokens: 20, reasoningTokens: 0, totalTokens: 30 },
       elapsedMs: 1234,
       response: { id: 'resp', usage: {}, output: [] },
-    } as any);
+    };
+    vi.mocked(runOracle).mockResolvedValue(liveResult);
 
     await performSessionRun({
       sessionMeta: baseSessionMeta,
@@ -103,7 +105,7 @@ describe('performSessionRun', () => {
   });
 
   test('records response metadata when runOracle throws OracleResponseError', async () => {
-    const errorResponse = { id: 'resp-error', output: [], usage: {} } as any;
+    const errorResponse: OracleResponse = { id: 'resp-error', output: [], usage: {} };
     vi.mocked(runOracle).mockRejectedValue(new OracleResponseError('boom', errorResponse));
 
     await expect(

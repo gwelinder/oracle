@@ -45,6 +45,7 @@ interface MockResponse extends OracleResponse {
     type: 'message';
     content: Array<{ type: 'text'; text: string }>;
   }>;
+  // biome-ignore lint/style/useNamingConvention: OpenAI uses _request_id in responses
   _request_id?: string | null;
 }
 
@@ -632,8 +633,9 @@ function buildResponse(): MockResponse {
       reasoning_tokens: 1,
       total_tokens: 16,
     },
+    // biome-ignore lint/style/useNamingConvention: mirrors API field
     _request_id: 'req_test_456',
-    incomplete_details: null,
+    incomplete_details: undefined,
     output: [
       {
         type: 'message',

@@ -172,6 +172,7 @@ export interface OracleResponse {
   };
   output_text?: string[];
   output?: ResponseOutputItem[];
+  // biome-ignore lint/style/useNamingConvention: field name provided by OpenAI Responses API
   _request_id?: string | null;
 }
 

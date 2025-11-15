@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { resolveBrowserConfig, DEFAULT_BROWSER_CONFIG } from '../../src/browser/config.js';
+import { resolveBrowserConfig } from '../../src/browser/config.js';
 import { CHATGPT_URL } from '../../src/browser/constants.js';
 
 describe('resolveBrowserConfig', () => {

@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { FileContent, FileSection, MinimalFsModule } from './types.js';
+import type { FileContent, FileSection, MinimalFsModule, FsStats } from './types.js';
 
 async function expandToFiles(targetPath: string, fsModule: MinimalFsModule): Promise<string[]> {
-  let stats;
+  let stats: FsStats;
   try {
     stats = await fsModule.stat(targetPath);
   } catch {

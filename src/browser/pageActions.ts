@@ -236,13 +236,13 @@ function buildModelMatchersLiteral(targetModel: string): { labelTokens: string[]
 }
 
 export async function submitPrompt(
-  deps: Pick<ChromeClient, 'Runtime' | 'Input'>,
+  deps: { runtime: ChromeClient['Runtime']; input: ChromeClient['Input'] },
   prompt: string,
   logger: BrowserLogger,
 ) {
-  const { Runtime, Input } = deps;
+  const { runtime, input } = deps;
   const encodedPrompt = JSON.stringify(prompt);
-  await Runtime.evaluate({
+  await runtime.evaluate({
     expression: `(() => {
       const SELECTORS = ${JSON.stringify(INPUT_SELECTORS)};
       const focusNode = (node) => {
@@ -279,9 +279,9 @@ export async function submitPrompt(
     awaitPromise: true,
   });
 
-  await Input.insertText({ text: prompt });
+    await input.insertText({ text: prompt });
 
-  const verification = await Runtime.evaluate({
+  const verification = await runtime.evaluate({
     expression: `(() => {
       const editor = document.querySelector('#prompt-textarea');
       const fallback = document.querySelector('textarea[name="prompt-textarea"]');
@@ -296,7 +296,7 @@ export async function submitPrompt(
   const editorText = verification.result?.value?.editorText?.trim?.() ?? '';
   const fallbackValue = verification.result?.value?.fallbackValue?.trim?.() ?? '';
   if (!editorText && !fallbackValue) {
-    await Runtime.evaluate({
+      await runtime.evaluate({
       expression: `(() => {
         const fallback = document.querySelector('textarea[name="prompt-textarea"]');
         if (fallback) {
@@ -312,16 +312,16 @@ export async function submitPrompt(
     });
   }
 
-  const clicked = await attemptSendButton(Runtime);
+  const clicked = await attemptSendButton(runtime);
   if (!clicked) {
-    await Input.dispatchKeyEvent({
+    await input.dispatchKeyEvent({
       type: 'rawKeyDown',
       key: 'Enter',
       code: 'Enter',
       windowsVirtualKeyCode: 13,
       nativeVirtualKeyCode: 13,
     });
-    await Input.dispatchKeyEvent({
+    await input.dispatchKeyEvent({
       type: 'keyUp',
       key: 'Enter',
       code: 'Enter',
@@ -333,7 +333,7 @@ export async function submitPrompt(
     logger('Clicked send button');
   }
 
-  await verifyPromptCommitted(Runtime, prompt, 30_000);
+  await verifyPromptCommitted(runtime, prompt, 30_000);
 }
 
 async function verifyPromptCommitted(Runtime: ChromeClient['Runtime'], prompt: string, timeoutMs: number) {
@@ -399,7 +399,7 @@ export async function waitForAssistantResponse(
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } }> {
   logger('Waiting for ChatGPT response');
   const expression = buildResponseObserverExpression(timeoutMs);
-  let evaluation;
+  let evaluation: Awaited<ReturnType<ChromeClient['Runtime']['evaluate']>>;
   try {
     evaluation = await Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
   } catch (error) {

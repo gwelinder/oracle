@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { syncCookies } from '../../src/browser/cookies.js';
+import type { ChromeClient } from '../../src/browser/types.js';
 
 const getCookiesPromised = vi.fn();
 vi.mock('chrome-cookies-secure', () => ({ getCookiesPromised }));
@@ -18,14 +19,24 @@ describe('syncCookies', () => {
       { name: 'csrftoken', value: 'xyz', domain: 'chatgpt.com' },
     ]);
     const setCookie = vi.fn().mockResolvedValue({ success: true });
-    const applied = await syncCookies({ setCookie } as any, 'https://chatgpt.com', null, logger);
+    const applied = await syncCookies(
+      { setCookie } as unknown as ChromeClient['Network'],
+      'https://chatgpt.com',
+      null,
+      logger,
+    );
     expect(applied).toBe(2);
     expect(setCookie).toHaveBeenCalledTimes(2);
   });
 
   test('swallows failures and returns zero', async () => {
     getCookiesPromised.mockRejectedValue(new Error('boom'));
-    const applied = await syncCookies({ setCookie: vi.fn() } as any, 'https://chatgpt.com', null, logger);
+    const applied = await syncCookies(
+      { setCookie: vi.fn() } as unknown as ChromeClient['Network'],
+      'https://chatgpt.com',
+      null,
+      logger,
+    );
     expect(applied).toBe(0);
   });
 });

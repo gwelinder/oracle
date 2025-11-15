@@ -1,8 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { DEFAULT_BROWSER_CONFIG, resolveBrowserConfig } from './config.js';
-import type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult, BrowserLogger } from './types.js';
+import { resolveBrowserConfig } from './config.js';
+import type { BrowserRunOptions, BrowserRunResult, BrowserLogger } from './types.js';
 import { launchChrome, registerTerminationHooks, hideChromeWindow, connectToChrome } from './chromeLifecycle.js';
 import { syncCookies } from './cookies.js';
 import {
@@ -15,7 +15,6 @@ import {
   captureAssistantMarkdown,
 } from './pageActions.js';
 import { estimateTokenCount } from './utils.js';
-import { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from './types.js';
 export { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
@@ -54,7 +53,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let answerText = '';
   let answerMarkdown = '';
   let answerHtml = '';
-  let runSuccessful = false;
+  let runStatus: 'attempted' | 'complete' = 'attempted';
 
   try {
     client = await connectToChrome(chrome.port, logger);
@@ -85,20 +84,20 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       await ensureModelSelection(Runtime, config.desiredModel, logger);
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
     }
-    await submitPrompt({ Runtime, Input }, promptText, logger);
+    await submitPrompt({ runtime: Runtime, input: Input }, promptText, logger);
     const answer = await waitForAssistantResponse(Runtime, config.timeoutMs, logger);
     answerText = answer.text;
     answerHtml = answer.html ?? '';
     const copiedMarkdown = await captureAssistantMarkdown(Runtime, answer.meta, logger);
-    answerMarkdown = copiedMarkdown || answerText;
-    runSuccessful = true;
+    answerMarkdown = copiedMarkdown ?? answerText;
+    runStatus = 'complete';
     const durationMs = Date.now() - startedAt;
     const answerChars = answerText.length;
-    const answerTokens = estimateTokenCount(answerMarkdown || answerText);
+    const answerTokens = estimateTokenCount(answerMarkdown);
     return {
       answerText,
       answerMarkdown,
-      answerHtml: answerHtml || undefined,
+      answerHtml: answerHtml.length > 0 ? answerHtml : undefined,
       tookMs: durationMs,
       answerTokens,
       answerChars,
@@ -128,7 +127,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       }
       await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
       const totalSeconds = (Date.now() - startedAt) / 1000;
-      logger(`Cleanup ${runSuccessful ? 'complete' : 'attempted'} • ${totalSeconds.toFixed(1)}s total`);
+      logger(`Cleanup ${runStatus} • ${totalSeconds.toFixed(1)}s total`);
     } else {
       logger(`Chrome left running on port ${chrome.port} with profile ${userDataDir}`);
     }

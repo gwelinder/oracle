@@ -10,7 +10,6 @@ import { existsSync } from 'node:fs';
 import type {
   ClientLike,
   MinimalFsModule,
-  OracleRequestBody,
   OracleResponse,
   PreviewMode,
   ResponseStreamLike,
@@ -21,13 +20,11 @@ import type {
 import { DEFAULT_SYSTEM_PROMPT, MODEL_CONFIGS, TOKENIZER_OPTIONS } from './config.js';
 import { readFiles } from './files.js';
 import { buildPrompt, buildRequestBody } from './request.js';
-import { formatElapsed, formatNumber, formatUSD } from './format.js';
+import { formatElapsed, formatUSD } from './format.js';
 import { getFileTokenStats, printFileTokenStats } from './tokenStats.js';
 import {
   OracleResponseError,
-  OracleTransportError,
   describeTransportError,
-  extractResponseMetadata,
   toTransportError,
 } from './errors.js';
 import { createDefaultClientFactory } from './client.js';
@@ -155,7 +152,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
 
   const runStart = now();
   const stream: ResponseStreamLike = await openAiClient.responses.stream(requestBody);
-  let sawTextDelta = false;
+  let sawTextDelta: boolean = false;
   let answerHeaderPrinted = false;
   const ensureAnswerHeader = () => {
     if (!options.silent && !answerHeaderPrinted) {

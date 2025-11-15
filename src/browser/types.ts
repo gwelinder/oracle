@@ -18,7 +18,9 @@ export interface PuppeteerCookie {
   domain?: string;
   path?: string;
   expires?: number;
+  // biome-ignore lint/style/useNamingConvention: matches Puppeteer cookie shape
   Secure?: boolean;
+  // biome-ignore lint/style/useNamingConvention: matches Puppeteer cookie shape
   HttpOnly?: boolean;
 }
 
