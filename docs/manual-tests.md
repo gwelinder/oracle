@@ -1,8 +1,9 @@
-# Manual Test Suite (Browser Mode)
+# Manual Test Suite (Browser Mode + Live API)
 
-These checks validate the real Chrome automation path. Run them whenever you
-touch browser mode (Chrome lifecycle, cookie sync, prompt injection, model
-selection, markdown capture, etc.).
+These checks validate the real Chrome automation path and the optional live
+Responses API smoke suite. Run the browser steps whenever you touch Chrome
+automation (lifecycle, cookie sync, prompt injection, Markdown capture, etc.),
+and run the live API suite before shipping major transport changes.
 
 ## Prerequisites
 
@@ -134,3 +135,24 @@ Use this when you need to inspect the live ChatGPT composer (DOM state, markdown
    - `pkill -f oracle-browser-<slug>` if Chrome is still running.
 
 > **Tip:** Running `npx chrome-devtools-mcp@latest --help` lists additional switches (custom Chrome binary, headless, viewport, etc.).
+
+## Responses API Live Smoke Tests
+
+These Vitest cases hit the real OpenAI API to exercise both transports:
+
+1. Export a real key and explicitly opt in (default runs stay fast):
+   ```bash
+   export OPENAI_API_KEY=sk-...
+   export ORACLE_LIVE_TEST=1
+   pnpm vitest run tests/live/openai-live.test.ts
+   ```
+2. The first test sends a GPT-5 Pro prompt and expects the CLI to stay in
+   background mode until OpenAI finishes (up to 30 minutes). The second test
+   targets the standard GPT-5 (gpt-5.1) path with foreground streaming.
+3. Watch the console for `Reconnected to OpenAI background response...` if
+   you're debugging transport flakiness; the test will fail if the response
+   status isn't `completed` or if the text doesn't contain the hard-coded
+   smoke strings.
+
+Skip these unless you're intentionally validating the production API; they are
+fully gated behind `ORACLE_LIVE_TEST=1` to avoid accidental CI runs.
