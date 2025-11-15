@@ -5,6 +5,52 @@ import {
 } from 'openai';
 import type { OracleResponse, OracleResponseMetadata, TransportFailureReason } from './types.js';
 
+export type OracleUserErrorCategory = 'file-validation' | 'browser-automation' | 'prompt-validation';
+
+export interface OracleUserErrorDetails {
+  [key: string]: unknown;
+}
+
+export class OracleUserError extends Error {
+  readonly category: OracleUserErrorCategory;
+  readonly details?: OracleUserErrorDetails;
+
+  constructor(category: OracleUserErrorCategory, message: string, details?: OracleUserErrorDetails) {
+    super(message);
+    this.name = 'OracleUserError';
+    this.category = category;
+    this.details = details;
+  }
+}
+
+export class FileValidationError extends OracleUserError {
+  constructor(message: string, details?: OracleUserErrorDetails) {
+    super('file-validation', message, details);
+    this.name = 'FileValidationError';
+  }
+}
+
+export class BrowserAutomationError extends OracleUserError {
+  constructor(message: string, details?: OracleUserErrorDetails) {
+    super('browser-automation', message, details);
+    this.name = 'BrowserAutomationError';
+  }
+}
+
+export class PromptValidationError extends OracleUserError {
+  constructor(message: string, details?: OracleUserErrorDetails) {
+    super('prompt-validation', message, details);
+    this.name = 'PromptValidationError';
+  }
+}
+
+export function asOracleUserError(error: unknown): OracleUserError | null {
+  if (error instanceof OracleUserError) {
+    return error;
+  }
+  return null;
+}
+
 export class OracleTransportError extends Error {
   readonly reason: TransportFailureReason;
 
