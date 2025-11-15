@@ -233,7 +233,7 @@ describe('api key logging', () => {
     );
 
     const combined = logs.join('\n');
-    expect(combined).toContain('Using OPENAI_API_KEY=sk-s****1234');
+    expect(combined).toContain('Using OPENAI_API_KEY=sk-sup****y-1234');
     expect(combined).not.toContain('supersecret');
   });
 });

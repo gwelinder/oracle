@@ -59,8 +59,8 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   const maskApiKey = (key: string | undefined | null): string | null => {
     if (!key) return null;
     if (key.length <= 8) return `${key[0] ?? ''}***${key[key.length - 1] ?? ''}`;
-    const prefix = key.slice(0, 4);
-    const suffix = key.slice(-4);
+    const prefix = key.slice(0, 6);
+    const suffix = key.slice(-6);
     return `${prefix}****${suffix}`;
   };
 
