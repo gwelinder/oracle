@@ -43,6 +43,7 @@ npx @steipete/oracle -- --prompt "Review the TS data layer" --file "src/**/*.ts"
 ## Highlights
 
 - **Bundle once, reuse anywhere** — Prompt + files become a markdown package the model can cite.
+- **Flexible file selection** — Glob patterns and `!` excludes let you scoop up or skip files without scripting.
 - **Pro-friendly** — GPT-5 Pro background runs stay alive for ~10 minutes with reconnection + token/cost tracking.
 - **Two paths, one UX** — API or browser, same flags and session logs.
 - **Search on by default** — The model can ground answers with fresh citations.
