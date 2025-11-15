@@ -102,7 +102,10 @@ program.hook('preAction', (thisCommand) => {
     thisCommand.setOptionValue('prompt', positional);
   }
   if (shouldRequirePrompt(rawCliArgs, opts)) {
-    throw new Error('Prompt is required. Provide it via --prompt "<text>".');
+    console.log(chalk.yellow('Prompt is required. Provide it via --prompt "<text>" or positional [prompt].'));
+    thisCommand.help({ error: false });
+    process.exitCode = 1;
+    return;
   }
 });
 program
