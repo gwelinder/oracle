@@ -13,6 +13,9 @@ import {
   PROMPT_FALLBACK_SELECTOR,
   FILE_INPUT_SELECTOR,
   GENERIC_FILE_INPUT_SELECTOR,
+  MENU_CONTAINER_SELECTOR,
+  MENU_ITEM_SELECTOR,
+  UPLOAD_STATUS_SELECTORS,
 } from './constants.js';
 import { delay } from './utils.js';
 
@@ -139,6 +142,8 @@ function buildModelSelectionExpression(targetModel: string): string {
   const matchers = buildModelMatchersLiteral(targetModel);
   const labelLiteral = JSON.stringify(matchers.labelTokens);
   const idLiteral = JSON.stringify(matchers.testIdTokens);
+  const menuContainerLiteral = JSON.stringify(MENU_CONTAINER_SELECTOR);
+  const menuItemLiteral = JSON.stringify(MENU_ITEM_SELECTOR);
   return `(() => {
     const BUTTON_SELECTOR = '${MODEL_BUTTON_SELECTOR}';
     const LABEL_TOKENS = ${labelLiteral};
@@ -196,11 +201,9 @@ function buildModelSelectionExpression(targetModel: string): string {
     };
 
     const findOption = () => {
-      const menus = Array.from(document.querySelectorAll('[role="menu"], [data-radix-collection-root]'));
+      const menus = Array.from(document.querySelectorAll(${menuContainerLiteral}));
       for (const menu of menus) {
-        const buttons = Array.from(
-          menu.querySelectorAll('button, [role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]'),
-        );
+        const buttons = Array.from(menu.querySelectorAll(${menuItemLiteral}));
         for (const option of buttons) {
           const testid = (option.getAttribute('data-testid') ?? '').toLowerCase();
           const text = option.textContent ?? '';
@@ -463,12 +466,7 @@ export async function waitForAttachmentCompletion(
       return { state: 'missing', uploading: false };
     }
     const disabled = button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true';
-    const uploadingSelectors = [
-      '[data-testid*="upload"]',
-      '[data-testid*="attachment"]',
-      '[data-state="loading"]',
-      '[aria-live="polite"]'
-    ];
+    const uploadingSelectors = ${JSON.stringify(UPLOAD_STATUS_SELECTORS)};
     const uploading = uploadingSelectors.some((selector) => {
       return Array.from(document.querySelectorAll(selector)).some((node) => {
         const text = node.textContent?.toLowerCase?.() ?? '';
@@ -633,6 +631,7 @@ export async function waitForAssistantResponse(
         if (recovered) {
           return recovered;
         }
+        await logDomFailure(Runtime, logger, 'assistant-response');
         throw error ?? new Error('Failed to capture assistant response');
       }
     } else {
@@ -641,6 +640,7 @@ export async function waitForAssistantResponse(
   }
 
   if (!evaluation) {
+    await logDomFailure(Runtime, logger, 'assistant-response');
     throw new Error('Failed to capture assistant response');
   }
 
@@ -648,6 +648,7 @@ export async function waitForAssistantResponse(
   if (parsed) {
     return parsed;
   }
+  await logDomFailure(Runtime, logger, 'assistant-response');
   throw new Error('Unable to capture assistant response');
 }
 
@@ -993,6 +994,10 @@ export async function captureAssistantMarkdown(
   const status = result?.value?.status;
   if (status && status !== 'missing-button') {
     logger(`Copy button fallback status: ${status}`);
+    await logDomFailure(Runtime, logger, 'copy-markdown');
+  }
+  if (!status) {
+    await logDomFailure(Runtime, logger, 'copy-markdown');
   }
   return null;
 }
