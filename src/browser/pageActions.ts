@@ -16,6 +16,8 @@ import {
   MENU_CONTAINER_SELECTOR,
   MENU_ITEM_SELECTOR,
   UPLOAD_STATUS_SELECTORS,
+  CLOUDFLARE_SCRIPT_SELECTOR,
+  CLOUDFLARE_TITLE,
 } from './constants.js';
 import { delay } from './utils.js';
 
@@ -43,12 +45,13 @@ export async function ensureNotBlocked(Runtime: ChromeClient['Runtime'], headles
 async function isCloudflareInterstitial(Runtime: ChromeClient['Runtime']): Promise<boolean> {
   const { result: titleResult } = await Runtime.evaluate({ expression: 'document.title', returnByValue: true });
   const title = typeof titleResult.value === 'string' ? titleResult.value : '';
-  if (title.toLowerCase().includes('just a moment')) {
+  const challengeTitle = CLOUDFLARE_TITLE.toLowerCase();
+  if (title.toLowerCase().includes(challengeTitle)) {
     return true;
   }
 
   const { result } = await Runtime.evaluate({
-    expression: `Boolean(document.querySelector('script[src*="/challenge-platform/"]'))`,
+    expression: `Boolean(document.querySelector('${CLOUDFLARE_SCRIPT_SELECTOR}'))`,
     returnByValue: true,
   });
   return Boolean(result.value);
