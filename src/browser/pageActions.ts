@@ -680,14 +680,43 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
       return all.at(-1) ?? null;
     };
 
-    const getPayload = () => {
-      return navigator.clipboard?.read?.()
-        ?.then((items) => Promise.all(items.map((item) => item.getType('text/plain').then((blob) => blob.text()))))
-        ?.then((values) => ({
-          markdown: values?.[0] ?? '',
-          success: Boolean(values?.[0]),
-          payloads: values,
-        }));
+    const interceptClipboard = () => {
+      const clipboard = navigator.clipboard;
+      const state = { text: '' };
+      if (!clipboard) {
+        return { state, restore: () => {} };
+      }
+      const originalWriteText = clipboard.writeText;
+      const originalWrite = clipboard.write;
+      clipboard.writeText = (value) => {
+        state.text = typeof value === 'string' ? value : '';
+        return Promise.resolve();
+      };
+      clipboard.write = async (items) => {
+        try {
+          const list = Array.isArray(items) ? items : items ? [items] : [];
+          for (const item of list) {
+            if (!item) continue;
+            const types = Array.isArray(item.types) ? item.types : [];
+            if (types.includes('text/plain') && typeof item.getType === 'function') {
+              const blob = await item.getType('text/plain');
+              const text = await blob.text();
+              state.text = text ?? '';
+              break;
+            }
+          }
+        } catch {
+          state.text = '';
+        }
+        return Promise.resolve();
+      };
+      return {
+        state,
+        restore: () => {
+          clipboard.writeText = originalWriteText;
+          clipboard.write = originalWrite;
+        },
+      };
     };
 
     return new Promise((resolve) => {
@@ -696,22 +725,47 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
         resolve({ success: false, status: 'missing-button' });
         return;
       }
-      const finish = (payload) => resolve(payload);
-
-      const handleCopy = async () => {
+      const interception = interceptClipboard();
+      let settled = false;
+      let pollId = null;
+      let timeoutId = null;
+      const finish = (payload) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (pollId) {
+          clearInterval(pollId);
+        }
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
         button.removeEventListener('copy', handleCopy, true);
-        const payloads = await Promise.allSettled([getPayload()]);
-        const markdown =
-          payloads.find((entry) => entry.status === 'fulfilled' && entry.value?.markdown)?.value?.markdown ?? '';
-        finish({ success: Boolean(markdown.trim()), markdown });
+        interception.restore?.();
+        resolve(payload);
+      };
+
+      const readIntercepted = () => {
+        const markdown = interception.state.text ?? '';
+        return { success: Boolean(markdown.trim()), markdown };
+      };
+
+      const handleCopy = () => {
+        finish(readIntercepted());
       };
 
       button.addEventListener('copy', handleCopy, true);
       button.scrollIntoView({ block: 'center', behavior: 'instant' });
       button.click();
-      setTimeout(() => {
+      pollId = setInterval(() => {
+        const payload = readIntercepted();
+        if (payload.success) {
+          finish(payload);
+        }
+      }, 100);
+      timeoutId = setTimeout(() => {
         button.removeEventListener('copy', handleCopy, true);
-        resolve({ success: false, status: 'timeout' });
+        finish({ success: false, status: 'timeout' });
       }, TIMEOUT_MS);
     });
   })()`;
