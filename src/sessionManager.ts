@@ -2,20 +2,64 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
+import type { WriteStream } from 'node:fs';
+
+export interface StoredRunOptions {
+  prompt?: string;
+  file?: string[];
+  model?: string;
+  maxInput?: number;
+  system?: string;
+  maxOutput?: number;
+  silent?: boolean;
+  filesReport?: boolean;
+}
+
+export interface SessionMetadata {
+  id: string;
+  createdAt: string;
+  status: string;
+  promptPreview?: string;
+  model?: string;
+  cwd?: string;
+  options: StoredRunOptions;
+  startedAt?: string;
+  completedAt?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    totalTokens: number;
+  };
+  errorMessage?: string;
+  elapsedMs?: number;
+}
+
+interface SessionLogWriter {
+  stream: WriteStream;
+  logLine: (line?: string) => void;
+  writeChunk: (chunk: string) => boolean;
+  logPath: string;
+}
+
+interface InitializeSessionOptions extends StoredRunOptions {
+  prompt?: string;
+  model: string;
+}
 
 const ORACLE_HOME = process.env.ORACLE_HOME_DIR ?? path.join(os.homedir(), '.oracle');
 const SESSIONS_DIR = path.join(ORACLE_HOME, 'sessions');
 const MAX_STATUS_LIMIT = 1000;
 
-async function ensureDir(dirPath) {
+async function ensureDir(dirPath: string): Promise<void> {
   await fs.mkdir(dirPath, { recursive: true });
 }
 
-export async function ensureSessionStorage() {
+export async function ensureSessionStorage(): Promise<void> {
   await ensureDir(SESSIONS_DIR);
 }
 
-function slugify(text, maxLength = 32) {
+function slugify(text: string, maxLength = 32): string {
   const words = text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
   if (words.length === 0) {
     return 'session';
@@ -36,29 +80,29 @@ function slugify(text, maxLength = 32) {
   return parts.join('-') || 'session';
 }
 
-export function createSessionId(prompt) {
+export function createSessionId(prompt: string): string {
   const timestamp = new Date().toISOString().replace(/\..*/, '').replace('T', '-').replace(/:/g, '-');
   const slug = slugify(prompt);
   return `${timestamp}-${slug}`;
 }
 
-function sessionDir(id) {
+function sessionDir(id: string): string {
   return path.join(SESSIONS_DIR, id);
 }
 
-function metaPath(id) {
+function metaPath(id: string): string {
   return path.join(sessionDir(id), 'session.json');
 }
 
-function logPath(id) {
+function logPath(id: string): string {
   return path.join(sessionDir(id), 'output.log');
 }
 
-function requestPath(id) {
+function requestPath(id: string): string {
   return path.join(sessionDir(id), 'request.json');
 }
 
-async function fileExists(targetPath) {
+async function fileExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
     return true;
@@ -67,7 +111,7 @@ async function fileExists(targetPath) {
   }
 }
 
-export async function initializeSession(options, cwd) {
+export async function initializeSession(options: InitializeSessionOptions, cwd: string): Promise<SessionMetadata> {
   await ensureSessionStorage();
   let sessionId = createSessionId(options.prompt || 'session');
   while (await fileExists(sessionDir(sessionId))) {
@@ -75,7 +119,7 @@ export async function initializeSession(options, cwd) {
   }
   const dir = sessionDir(sessionId);
   await ensureDir(dir);
-  const metadata = {
+  const metadata: SessionMetadata = {
     id: sessionId,
     createdAt: new Date().toISOString(),
     status: 'pending',
@@ -99,48 +143,54 @@ export async function initializeSession(options, cwd) {
   return metadata;
 }
 
-export async function readSessionMetadata(sessionId) {
+export async function readSessionMetadata(sessionId: string): Promise<SessionMetadata | null> {
   try {
     const raw = await fs.readFile(metaPath(sessionId), 'utf8');
-    return JSON.parse(raw);
+    return JSON.parse(raw) as SessionMetadata;
   } catch {
     return null;
   }
 }
 
-export async function updateSessionMetadata(sessionId, updates) {
-  const existing = (await readSessionMetadata(sessionId)) ?? { id: sessionId };
+export async function updateSessionMetadata(
+  sessionId: string,
+  updates: Partial<SessionMetadata>,
+): Promise<SessionMetadata> {
+  const existing = (await readSessionMetadata(sessionId)) ?? ({ id: sessionId } as SessionMetadata);
   const next = { ...existing, ...updates };
   await fs.writeFile(metaPath(sessionId), JSON.stringify(next, null, 2), 'utf8');
   return next;
 }
 
-export function createSessionLogWriter(sessionId) {
+export function createSessionLogWriter(sessionId: string): SessionLogWriter {
   const stream = createWriteStream(logPath(sessionId), { flags: 'a' });
-  const logLine = (line = '') => {
+  const logLine = (line = ''): void => {
     stream.write(`${line}\n`);
   };
-  const writeChunk = (chunk) => {
+  const writeChunk = (chunk: string): boolean => {
     stream.write(chunk);
     return true;
   };
   return { stream, logLine, writeChunk, logPath: logPath(sessionId) };
 }
 
-export async function listSessionsMetadata() {
+export async function listSessionsMetadata(): Promise<SessionMetadata[]> {
   await ensureSessionStorage();
   const entries = await fs.readdir(SESSIONS_DIR).catch(() => []);
-  const metas = [];
+  const metas: SessionMetadata[] = [];
   for (const entry of entries) {
     const meta = await readSessionMetadata(entry);
     if (meta) {
       metas.push(meta);
     }
   }
-  return metas.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  return metas.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
-export function filterSessionsByRange(metas, { hours = 24, includeAll = false, limit = 100 }) {
+export function filterSessionsByRange(
+  metas: SessionMetadata[],
+  { hours = 24, includeAll = false, limit = 100 }: { hours?: number; includeAll?: boolean; limit?: number },
+): { entries: SessionMetadata[]; truncated: boolean; total: number } {
   const maxLimit = Math.min(limit, MAX_STATUS_LIMIT);
   let filtered = metas;
   if (!includeAll) {
@@ -152,7 +202,7 @@ export function filterSessionsByRange(metas, { hours = 24, includeAll = false, l
   return { entries: limited, truncated, total: filtered.length };
 }
 
-export async function readSessionLog(sessionId) {
+export async function readSessionLog(sessionId: string): Promise<string> {
   try {
     return await fs.readFile(logPath(sessionId), 'utf8');
   } catch {
@@ -160,7 +210,10 @@ export async function readSessionLog(sessionId) {
   }
 }
 
-export async function deleteSessionsOlderThan({ hours = 24, includeAll = false } = {}) {
+export async function deleteSessionsOlderThan({
+  hours = 24,
+  includeAll = false,
+}: { hours?: number; includeAll?: boolean } = {}): Promise<{ deleted: number }> {
   await ensureSessionStorage();
   const entries = await fs.readdir(SESSIONS_DIR).catch(() => []);
   if (!entries.length) {
@@ -196,7 +249,7 @@ export async function deleteSessionsOlderThan({ hours = 24, includeAll = false }
   return { deleted };
 }
 
-export async function wait(ms) {
+export async function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 

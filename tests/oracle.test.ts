@@ -141,6 +141,9 @@ describe('runOracle preview mode', () => {
     );
 
     expect(result.mode).toBe('preview');
+    if (result.mode !== 'preview') {
+      throw new Error('Expected preview result');
+    }
     expect(result.previewMode).toBe('json');
     expect(result.requestBody?.tools).toEqual([{ type: 'web_search_preview' }]);
     expect(logs[0]).toBe('Request JSON');
@@ -376,11 +379,13 @@ describe('renderPromptMarkdown', () => {
   test('emits markdown bundle with system and files', async () => {
     const { dir, filePath } = await createTempFile('rendered content');
     try {
-      const markdown = await renderPromptMarkdown({
-        prompt: 'Hello world',
-        model: 'gpt-5-pro',
-        file: [filePath],
-      }, { cwd: dir });
+      const markdown = await renderPromptMarkdown(
+        {
+          prompt: 'Hello world',
+          file: [filePath],
+        },
+        { cwd: dir },
+      );
       expect(markdown).toContain('[SYSTEM]');
       expect(markdown).toContain('[USER]');
       expect(markdown).toContain('[FILE: sample.txt]');
@@ -534,7 +539,7 @@ describe('oracle utility helpers', () => {
       { path: '/tmp/a.txt', content: 'aaa' },
       { path: '/tmp/b.txt', content: 'bbbbbb' },
     ];
-    const tokenizer = (text: string) => text.length;
+    const tokenizer = (input: unknown) => String(input).length;
     const { stats, totalTokens } = getFileTokenStats(files, {
       cwd: '/tmp',
       tokenizer,
@@ -599,7 +604,7 @@ function createMockFs(fileEntries: Record<string, string>) {
       if (!hasDirectory(normalizedPath)) {
         throw Object.assign(new Error(`Not a directory: ${normalizedPath}`), { code: 'ENOTDIR' });
       }
-      const children = new Set();
+      const children = new Set<string>();
       const prefix = `${normalizedPath}${path.sep}`;
       for (const entry of Object.keys(normalizedEntries)) {
         if (entry.startsWith(prefix)) {

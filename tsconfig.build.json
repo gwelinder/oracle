@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "declaration": false,
+    "emitDeclarationOnly": false,
+    "sourceMap": false,
+    "allowJs": false,
+    "removeComments": false
+  },
+  "include": ["bin/**/*.ts", "scripts/**/*.ts", "src/**/*.ts"],
+  "exclude": ["tests", "dist", "node_modules", ".bun-check"]
+}

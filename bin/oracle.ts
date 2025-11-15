@@ -1,6 +1,7 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import 'dotenv/config';
 import { Command, InvalidArgumentError, Option } from 'commander';
+import type { OptionValues } from 'commander';
 import chalk from 'chalk';
 import kleur from 'kleur';
 import {
@@ -16,7 +17,41 @@ import {
   SESSIONS_DIR,
   deleteSessionsOlderThan,
 } from '../src/sessionManager.js';
+import type { SessionMetadata } from '../src/sessionManager.js';
 import { runOracle, MODEL_CONFIGS, parseIntOption, renderPromptMarkdown, readFiles } from '../src/oracle.js';
+import type { ModelName, PreviewMode, RunOracleOptions } from '../src/oracle.js';
+
+interface CliOptions extends OptionValues {
+  prompt?: string;
+  file?: string[];
+  model: ModelName;
+  filesReport?: boolean;
+  maxInput?: number;
+  maxOutput?: number;
+  system?: string;
+  silent?: boolean;
+  search?: boolean;
+  preview?: boolean | string;
+  previewMode?: PreviewMode;
+  apiKey?: string;
+  session?: string;
+  execSession?: string;
+  renderMarkdown?: boolean;
+  sessionId?: string;
+}
+
+interface ShowStatusOptions {
+  hours: number;
+  includeAll: boolean;
+  limit: number;
+  showExamples?: boolean;
+}
+
+interface StatusOptions extends OptionValues {
+  hours: number;
+  limit: number;
+  all: boolean;
+}
 
 const VERSION = '1.0.0';
 
@@ -45,13 +80,14 @@ program
   .option('--hours <hours>', 'Look back this many hours when listing sessions (default 24).', parseFloatOption, 24)
   .option('--limit <count>', 'Maximum sessions to show when listing (max 1000).', parseIntOption, 100)
   .option('--all', 'Include all stored sessions regardless of age.', false)
-  .action(async (sessionId, cmd) => {
+  .action(async (sessionId, cmd: Command) => {
+    const sessionOptions = cmd.opts<StatusOptions>();
     if (!sessionId) {
       const showExamples = usesDefaultStatusFilters(cmd);
       await showStatus({
-        hours: cmd.all ? Infinity : cmd.hours,
-        includeAll: cmd.all,
-        limit: cmd.limit,
+        hours: sessionOptions.all ? Infinity : sessionOptions.hours,
+        includeAll: sessionOptions.all,
+        limit: sessionOptions.limit,
         showExamples,
       });
       return;
@@ -65,12 +101,13 @@ const statusCommand = program
   .option('--hours <hours>', 'Look back this many hours (default 24).', parseFloatOption, 24)
   .option('--limit <count>', 'Maximum sessions to show (max 1000).', parseIntOption, 100)
   .option('--all', 'Include all stored sessions regardless of age.', false)
-  .action(async (cmd) => {
+  .action(async (cmd: Command) => {
+    const statusOptions = cmd.opts<StatusOptions>();
     const showExamples = usesDefaultStatusFilters(cmd);
     await showStatus({
-      hours: cmd.all ? Infinity : cmd.hours,
-      includeAll: cmd.all,
-      limit: cmd.limit,
+      hours: statusOptions.all ? Infinity : statusOptions.hours,
+      includeAll: statusOptions.all,
+      limit: statusOptions.limit,
       showExamples,
     });
   });
@@ -80,15 +117,16 @@ statusCommand
   .description('Delete stored sessions older than the provided window (24h default).')
   .option('--hours <hours>', 'Delete sessions older than this many hours (default 24).', parseFloatOption, 24)
   .option('--all', 'Delete all stored sessions.', false)
-  .action(async (cmd) => {
-    const result = await deleteSessionsOlderThan({ hours: cmd.hours, includeAll: cmd.all });
-    const scope = cmd.all ? 'all stored sessions' : `sessions older than ${cmd.hours}h`;
+  .action(async (cmd: Command) => {
+    const clearOptions = cmd.opts<StatusOptions>();
+    const result = await deleteSessionsOlderThan({ hours: clearOptions.hours, includeAll: clearOptions.all });
+    const scope = clearOptions.all ? 'all stored sessions' : `sessions older than ${clearOptions.hours}h`;
     console.log(`Deleted ${result.deleted} ${result.deleted === 1 ? 'session' : 'sessions'} (${scope}).`);
   });
 
 const isTty = process.stdout.isTTY;
-const bold = (text) => (isTty ? kleur.bold(text) : text);
-const dim = (text) => (isTty ? kleur.dim(text) : text);
+const bold = (text: string): string => (isTty ? kleur.bold(text) : text);
+const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
 
 program.addHelpText('beforeAll', () => `${bold(`Oracle CLI v${VERSION}`)} — GPT-5 Pro/GPT-5.1 for tough questions with code/file context.\n`);
 program.addHelpText(
@@ -115,7 +153,7 @@ ${dim('    Attach to a running/completed session, streaming the saved transcript
 `,
 );
 
-function collectPaths(value, previous) {
+function collectPaths(value: string | string[] | undefined, previous: string[] = []): string[] {
   if (!value) {
     return previous;
   }
@@ -123,7 +161,7 @@ function collectPaths(value, previous) {
   return previous.concat(nextValues.flatMap((entry) => entry.split(',')).map((entry) => entry.trim()).filter(Boolean));
 }
 
-function parseFloatOption(value) {
+function parseFloatOption(value: string): number {
   const parsed = Number.parseFloat(value);
   if (Number.isNaN(parsed)) {
     throw new InvalidArgumentError('Value must be a number.');
@@ -131,14 +169,14 @@ function parseFloatOption(value) {
   return parsed;
 }
 
-function validateModel(value) {
-  if (!MODEL_CONFIGS[value]) {
+function validateModel(value: string): ModelName {
+  if (!(value in MODEL_CONFIGS)) {
     throw new InvalidArgumentError(`Unsupported model "${value}". Choose one of: ${Object.keys(MODEL_CONFIGS).join(', ')}`);
   }
-  return value;
+  return value as ModelName;
 }
 
-function usesDefaultStatusFilters(cmd) {
+function usesDefaultStatusFilters(cmd: Command): boolean {
   const hoursSource = cmd.getOptionValueSource?.('hours') ?? 'default';
   const limitSource = cmd.getOptionValueSource?.('limit') ?? 'default';
   const allSource = cmd.getOptionValueSource?.('all') ?? 'default';
@@ -147,9 +185,9 @@ function usesDefaultStatusFilters(cmd) {
 
 const rawArgs = process.argv.slice(2);
 
-function resolvePreviewMode(value) {
+function resolvePreviewMode(value: boolean | string | undefined): PreviewMode | undefined {
   if (typeof value === 'string' && value.length > 0) {
-    return value;
+    return value as PreviewMode;
   }
   if (value === true) {
     return 'summary';
@@ -157,7 +195,47 @@ function resolvePreviewMode(value) {
   return undefined;
 }
 
-async function runRootCommand(options) {
+function buildRunOptions(options: CliOptions, overrides: Partial<RunOracleOptions> = {}): RunOracleOptions {
+  if (!options.prompt) {
+    throw new Error('Prompt is required.');
+  }
+  return {
+    prompt: options.prompt,
+    model: options.model,
+    file: overrides.file ?? options.file ?? [],
+    filesReport: overrides.filesReport ?? options.filesReport,
+    maxInput: overrides.maxInput ?? options.maxInput,
+    maxOutput: overrides.maxOutput ?? options.maxOutput,
+    system: overrides.system ?? options.system,
+    silent: overrides.silent ?? options.silent,
+    search: overrides.search ?? options.search,
+    preview: overrides.preview ?? undefined,
+    previewMode: overrides.previewMode ?? options.previewMode,
+    apiKey: overrides.apiKey ?? options.apiKey,
+    sessionId: overrides.sessionId ?? options.sessionId,
+  };
+}
+
+function buildRunOptionsFromMetadata(metadata: SessionMetadata): RunOracleOptions {
+  const stored = metadata.options ?? {};
+  return {
+    prompt: stored.prompt ?? '',
+    model: (stored.model as ModelName) ?? 'gpt-5-pro',
+    file: stored.file ?? [],
+    filesReport: stored.filesReport,
+    maxInput: stored.maxInput,
+    maxOutput: stored.maxOutput,
+    system: stored.system,
+    silent: stored.silent,
+    search: undefined,
+    preview: false,
+    previewMode: undefined,
+    apiKey: undefined,
+    sessionId: metadata.id,
+  };
+}
+
+async function runRootCommand(options: CliOptions): Promise<void> {
   const previewMode = resolvePreviewMode(options.preview);
 
   if (rawArgs.length === 0) {
@@ -180,7 +258,10 @@ async function runRootCommand(options) {
     if (!options.prompt) {
       throw new Error('Prompt is required when using --render-markdown.');
     }
-    const markdown = await renderPromptMarkdown(options, { cwd: process.cwd() });
+    const markdown = await renderPromptMarkdown(
+      { prompt: options.prompt, file: options.file, system: options.system },
+      { cwd: process.cwd() },
+    );
     console.log(markdown);
     return;
   }
@@ -189,10 +270,8 @@ async function runRootCommand(options) {
     if (!options.prompt) {
       throw new Error('Prompt is required when using --preview.');
     }
-    await runOracle(
-      { ...options, previewMode, preview: true },
-      { log: console.log, write: (chunk) => process.stdout.write(chunk) },
-    );
+    const runOptions = buildRunOptions(options, { preview: true, previewMode });
+    await runOracle(runOptions, { log: console.log, write: (chunk: string) => process.stdout.write(chunk) });
     return;
   }
 
@@ -205,22 +284,17 @@ async function runRootCommand(options) {
   }
 
   await ensureSessionStorage();
-  const sessionMeta = await initializeSession(options, process.cwd());
-  await runInteractiveSession(sessionMeta, options);
+  const baseRunOptions = buildRunOptions(options, { preview: false, previewMode: undefined });
+  const sessionMeta = await initializeSession(baseRunOptions, process.cwd());
+  const liveRunOptions: RunOracleOptions = { ...baseRunOptions, sessionId: sessionMeta.id };
+  await runInteractiveSession(sessionMeta, liveRunOptions);
   console.log(chalk.bold(`Session ${sessionMeta.id} completed`));
 }
 
-async function runInteractiveSession(sessionMeta, options) {
-  const runOptions = {
-    ...options,
-    sessionId: sessionMeta.id,
-    preview: false,
-    previewMode: undefined,
-    file: options.file ?? [],
-  };
+async function runInteractiveSession(sessionMeta: SessionMetadata, runOptions: RunOracleOptions): Promise<void> {
   const { logLine, writeChunk, stream } = createSessionLogWriter(sessionMeta.id);
   let headerAugmented = false;
-  const combinedLog = (message = '') => {
+  const combinedLog = (message = ''): void => {
     if (!headerAugmented && message.startsWith('Oracle (')) {
       headerAugmented = true;
       console.log(`${message}\n${chalk.blue(`Reattach via: oracle session ${sessionMeta.id}`)}`);
@@ -231,7 +305,7 @@ async function runInteractiveSession(sessionMeta, options) {
     console.log(message);
     logLine(message);
   };
-  const combinedWrite = (chunk) => {
+  const combinedWrite = (chunk: string): boolean => {
     writeChunk(chunk);
     return process.stdout.write(chunk);
   };
@@ -241,19 +315,22 @@ async function runInteractiveSession(sessionMeta, options) {
       log: combinedLog,
       write: combinedWrite,
     });
+    if (result.mode !== 'live') {
+      throw new Error('Unexpected preview result while running an interactive session.');
+    }
     await updateSessionMetadata(sessionMeta.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
       usage: result.usage,
       elapsedMs: result.elapsedMs,
     });
-    return result;
-  } catch (error) {
-    combinedLog(`ERROR: ${error?.message ?? error}`);
+  } catch (error: unknown) {
+    const message = formatError(error);
+    combinedLog(`ERROR: ${message}`);
     await updateSessionMetadata(sessionMeta.id, {
       status: 'error',
       completedAt: new Date().toISOString(),
-      errorMessage: error?.message ?? String(error),
+      errorMessage: message,
     });
     throw error;
   } finally {
@@ -261,47 +338,45 @@ async function runInteractiveSession(sessionMeta, options) {
   }
 }
 
-async function executeSession(sessionId) {
+async function executeSession(sessionId: string) {
   const metadata = await readSessionMetadata(sessionId);
   if (!metadata) {
     console.error(chalk.red(`No session found with ID ${sessionId}`));
     process.exitCode = 1;
     return;
   }
-  const options = { ...metadata.options, sessionId }; // include sessionId for logging
-  options.file = metadata.options.file ?? [];
-  options.preview = false;
-  options.previewMode = undefined;
-  options.silent = false;
-  options.prompt = metadata.options.prompt;
+  const runOptions = buildRunOptionsFromMetadata(metadata);
   const { logLine, writeChunk, stream } = createSessionLogWriter(sessionId);
   try {
     await updateSessionMetadata(sessionId, { status: 'running', startedAt: new Date().toISOString() });
-    const result = await runOracle(options, {
+    const result = await runOracle(runOptions, {
       cwd: metadata.cwd,
       log: logLine,
       write: writeChunk,
-      sessionId,
     });
+    if (result.mode !== 'live') {
+      throw new Error('Unexpected preview result while executing a stored session.');
+    }
     await updateSessionMetadata(sessionId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
       usage: result.usage,
       elapsedMs: result.elapsedMs,
     });
-  } catch (error) {
-    logLine(`ERROR: ${error?.message ?? error}`);
+  } catch (error: unknown) {
+    const message = formatError(error);
+    logLine(`ERROR: ${message}`);
     await updateSessionMetadata(sessionId, {
       status: 'error',
       completedAt: new Date().toISOString(),
-      errorMessage: error?.message ?? String(error),
+      errorMessage: message,
     });
   } finally {
     stream.end();
   }
 }
 
-async function showStatus({ hours, includeAll, limit, showExamples = false }) {
+async function showStatus({ hours, includeAll, limit, showExamples = false }: ShowStatusOptions) {
   const metas = await listSessionsMetadata();
   const { entries, truncated, total } = filterSessionsByRange(metas, { hours, includeAll, limit });
   if (!entries.length) {
@@ -330,7 +405,7 @@ async function showStatus({ hours, includeAll, limit, showExamples = false }) {
   }
 }
 
-function printStatusExamples() {
+function printStatusExamples(): void {
   console.log('');
   console.log(chalk.bold('Usage Examples'));
   console.log(`${chalk.bold('  oracle status --hours 72 --limit 50')}`);
@@ -341,7 +416,7 @@ function printStatusExamples() {
   console.log(dim('    Attach to a specific running/completed session to stream its output.'));
 }
 
-async function attachSession(sessionId) {
+async function attachSession(sessionId: string): Promise<void> {
   const metadata = await readSessionMetadata(sessionId);
   if (!metadata) {
     console.error(chalk.red(`No session found with ID ${sessionId}`));
@@ -387,12 +462,20 @@ async function attachSession(sessionId) {
   }
 }
 
-program.action(async function () {
-  const options = this.optsWithGlobals();
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+program.action(async function (this: Command) {
+  const options = this.optsWithGlobals() as CliOptions;
   await runRootCommand(options);
 });
 
-await program.parseAsync(process.argv).catch((error) => {
-  console.error(chalk.red('✖'), error?.message || error);
+await program.parseAsync(process.argv).catch((error: unknown) => {
+  if (error instanceof Error) {
+    console.error(chalk.red('✖'), error.message);
+  } else {
+    console.error(chalk.red('✖'), error);
+  }
   process.exitCode = 1;
 });

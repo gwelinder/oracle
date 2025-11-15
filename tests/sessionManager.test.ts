@@ -90,10 +90,10 @@ describe('session lifecycle', () => {
       { prompt: 'Update me', model: 'gpt-5-pro' },
       '/tmp/cwd',
     );
-    await sessionModule.updateSessionMetadata(meta.id, { status: 'complete', extra: 'value' });
+    await sessionModule.updateSessionMetadata(meta.id, { status: 'complete', promptPreview: 'value' });
     const updated = await sessionModule.readSessionMetadata(meta.id);
     expect(updated?.status).toBe('complete');
-    expect(updated?.extra).toBe('value');
+    expect(updated?.promptPreview).toBe('value');
   });
 
   test('createSessionLogWriter appends logs and supports chunk writes', async () => {

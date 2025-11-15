@@ -3,17 +3,19 @@
   "version": "1.0.0",
   "description": "CLI wrapper around OpenAI Responses API with GPT-5 Pro and GPT-5.1 high reasoning modes.",
   "type": "module",
-  "main": "bin/oracle.js",
+  "main": "dist/bin/oracle.js",
   "bin": {
-    "oracle": "./bin/oracle.js"
+    "oracle": "./dist/bin/oracle.js"
   },
   "scripts": {
-    "start": "node ./scripts/run-cli.js",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "pnpm run build && node ./dist/scripts/run-cli.js",
     "oracle": "pnpm start",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm run typecheck && biome lint .",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "prepare": "pnpm run build"
   },
   "repository": {
     "type": "git",

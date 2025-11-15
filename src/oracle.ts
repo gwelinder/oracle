@@ -8,13 +8,142 @@ import process from 'node:process';
 import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 
+type TokenizerFn = (input: unknown, options?: Record<string, unknown>) => number;
+
+export type ModelName = 'gpt-5-pro' | 'gpt-5.1';
+
+interface ModelConfig {
+  model: ModelName;
+  tokenizer: TokenizerFn;
+  inputLimit: number;
+  pricing: {
+    inputPerToken: number;
+    outputPerToken: number;
+  };
+  reasoning: { effort: 'high' } | null;
+}
+
+export interface FileContent {
+  path: string;
+  content: string;
+}
+
+interface FileSection {
+  index: number;
+  absolutePath: string;
+  displayPath: string;
+  sectionText: string;
+  content: string;
+}
+
+interface FsStats {
+  isFile(): boolean;
+  isDirectory(): boolean;
+}
+
+export interface MinimalFsModule {
+  stat(targetPath: string): Promise<FsStats>;
+  readdir(targetPath: string): Promise<string[]>;
+  readFile(targetPath: string, encoding: BufferEncoding): Promise<string>;
+}
+
+interface FileTokenEntry {
+  path: string;
+  displayPath: string;
+  tokens: number;
+  percent?: number;
+}
+
+interface FileTokenStats {
+  stats: FileTokenEntry[];
+  totalTokens: number;
+}
+
+export type PreviewMode = 'summary' | 'json' | 'full';
+
+interface ResponseStreamEvent {
+  type: string;
+  delta?: string;
+  [key: string]: unknown;
+}
+
+interface ResponseStreamLike extends AsyncIterable<ResponseStreamEvent> {
+  finalResponse(): Promise<any>;
+  abort?: () => void;
+}
+
+interface ClientLike {
+  responses: {
+    stream(body: any): Promise<ResponseStreamLike> | ResponseStreamLike;
+  };
+}
+
+export interface RunOracleOptions {
+  prompt: string;
+  model: ModelName;
+  file?: string[];
+  filesReport?: boolean;
+  maxInput?: number;
+  maxOutput?: number;
+  system?: string;
+  silent?: boolean;
+  search?: boolean;
+  preview?: boolean | string;
+  previewMode?: PreviewMode;
+  apiKey?: string;
+  sessionId?: string;
+}
+
+interface UsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+}
+
+interface PreviewResult {
+  mode: 'preview';
+  previewMode: PreviewMode;
+  requestBody: any;
+  estimatedInputTokens: number;
+  inputTokenBudget: number;
+}
+
+interface LiveResult {
+  mode: 'live';
+  response: any;
+  usage: UsageSummary;
+  elapsedMs: number;
+}
+
+export type RunOracleResult = PreviewResult | LiveResult;
+
+export interface RunOracleDeps {
+  apiKey?: string;
+  cwd?: string;
+  fs?: MinimalFsModule;
+  log?: (message: string) => void;
+  write?: (chunk: string) => boolean;
+  now?: () => number;
+  clientFactory?: (apiKey: string) => ClientLike;
+  client?: ClientLike;
+}
+
+interface BuildRequestBodyParams {
+  modelConfig: ModelConfig;
+  systemPrompt: string;
+  userPrompt: string;
+  searchEnabled: boolean;
+  maxOutputTokens?: number;
+}
+
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 
-export const MODEL_CONFIGS = {
+export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
   'gpt-5-pro': {
     model: 'gpt-5-pro',
-    tokenizer: countTokensGpt5Pro,
+    tokenizer: countTokensGpt5Pro as TokenizerFn,
     inputLimit: 196000,
     pricing: {
       inputPerToken: 15 / 1_000_000,
@@ -24,7 +153,7 @@ export const MODEL_CONFIGS = {
   },
   'gpt-5.1': {
     model: 'gpt-5.1',
-    tokenizer: countTokensGpt5,
+    tokenizer: countTokensGpt5 as TokenizerFn,
     inputLimit: 196000,
     pricing: {
       inputPerToken: 1.25 / 1_000_000,
@@ -41,11 +170,11 @@ export const DEFAULT_SYSTEM_PROMPT = [
   'Emphasize direct answers, cite any files referenced, and clearly note when the search tool was used.',
 ].join(' ');
 const isTty = process.stdout.isTTY;
-const dim = (text) => (isTty ? kleur.dim(text) : text);
+const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
 
-const TOKENIZER_OPTIONS = { allowedSpecial: 'all' };
+const TOKENIZER_OPTIONS = { allowedSpecial: 'all' } as const;
 
-export function collectPaths(value, previous = []) {
+export function collectPaths(value: string | string[] | undefined, previous: string[] = []): string[] {
   if (!value) {
     return previous;
   }
@@ -56,7 +185,7 @@ export function collectPaths(value, previous = []) {
     .filter(Boolean);
 }
 
-export function parseIntOption(value) {
+export function parseIntOption(value: string | undefined): number | undefined {
   if (value == null) {
     return undefined;
   }
@@ -67,7 +196,7 @@ export function parseIntOption(value) {
   return parsed;
 }
 
-async function expandToFiles(targetPath, fsModule) {
+async function expandToFiles(targetPath: string, fsModule: MinimalFsModule): Promise<string[]> {
   let stats;
   try {
     stats = await fsModule.stat(targetPath);
@@ -87,9 +216,12 @@ async function expandToFiles(targetPath, fsModule) {
   throw new Error(`Not a file or directory: ${targetPath}`);
 }
 
-export async function readFiles(filePaths, { cwd = process.cwd(), fsModule = fs } = {}) {
-  const files = [];
-  const seen = new Set();
+export async function readFiles(
+  filePaths: string[],
+  { cwd = process.cwd(), fsModule = fs as MinimalFsModule } = {},
+): Promise<FileContent[]> {
+  const files: FileContent[] = [];
+  const seen = new Set<string>();
   for (const rawPath of filePaths) {
     const absolutePath = path.resolve(cwd, rawPath);
     const expandedPaths = await expandToFiles(absolutePath, fsModule);
@@ -105,7 +237,7 @@ export async function readFiles(filePaths, { cwd = process.cwd(), fsModule = fs 
   return files;
 }
 
-export function createFileSections(files, cwd = process.cwd()) {
+export function createFileSections(files: FileContent[], cwd = process.cwd()): FileSection[] {
   return files.map((file, index) => {
     const relative = path.relative(cwd, file.path) || file.path;
     const sectionText = [
@@ -124,7 +256,7 @@ export function createFileSections(files, cwd = process.cwd()) {
   });
 }
 
-export function buildPrompt(basePrompt, files, cwd = process.cwd()) {
+export function buildPrompt(basePrompt: string, files: FileContent[], cwd = process.cwd()): string {
   if (!files.length) {
     return basePrompt.trim();
   }
@@ -132,7 +264,7 @@ export function buildPrompt(basePrompt, files, cwd = process.cwd()) {
   return `${basePrompt.trim()}\n\n### Attached Files\n${sections.map((section) => section.sectionText).join('\n\n')}`;
 }
 
-export function extractTextOutput(response) {
+export function extractTextOutput(response: any): string {
   if (Array.isArray(response.output_text) && response.output_text.length > 0) {
     return response.output_text.join('\n').trim();
   }
@@ -158,7 +290,7 @@ export function extractTextOutput(response) {
   return textChunks.join('\n').trim();
 }
 
-export function formatUSD(value) {
+export function formatUSD(value: number): string {
   if (!Number.isFinite(value)) {
     return 'n/a';
   }
@@ -171,7 +303,10 @@ export function formatUSD(value) {
   return `$${value.toFixed(6)}`;
 }
 
-export function formatNumber(value, { estimated = false } = {}) {
+export function formatNumber(
+  value: number | null | undefined,
+  { estimated = false }: { estimated?: boolean } = {},
+): string {
   if (value == null) {
     return 'n/a';
   }
@@ -179,7 +314,7 @@ export function formatNumber(value, { estimated = false } = {}) {
   return `${value.toLocaleString()}${suffix}`;
 }
 
-export function formatElapsed(ms) {
+export function formatElapsed(ms: number): string {
   const totalSeconds = ms / 1000;
   if (totalSeconds < 60) {
     return `${totalSeconds.toFixed(2)}s`;
@@ -194,7 +329,20 @@ export function formatElapsed(ms) {
   return `${adjustedMinutes}m ${seconds}s`;
 }
 
-export function getFileTokenStats(files, { cwd = process.cwd(), tokenizer, tokenizerOptions, inputTokenBudget }) {
+export function getFileTokenStats(
+  files: FileContent[],
+  {
+    cwd = process.cwd(),
+    tokenizer,
+    tokenizerOptions,
+    inputTokenBudget,
+  }: {
+    cwd?: string;
+    tokenizer: TokenizerFn;
+    tokenizerOptions: Record<string, unknown>;
+    inputTokenBudget?: number;
+  },
+): FileTokenStats {
   if (!files.length) {
     return { stats: [], totalTokens: 0 };
   }
@@ -215,7 +363,10 @@ export function getFileTokenStats(files, { cwd = process.cwd(), tokenizer, token
   return { stats, totalTokens };
 }
 
-export function printFileTokenStats({ stats, totalTokens }, { inputTokenBudget, log = console.log }) {
+export function printFileTokenStats(
+  { stats, totalTokens }: FileTokenStats,
+  { inputTokenBudget, log = console.log }: { inputTokenBudget?: number; log?: (message: string) => void },
+): void {
   if (!stats.length) {
     return;
   }
@@ -237,7 +388,13 @@ export function printFileTokenStats({ stats, totalTokens }, { inputTokenBudget, 
   }
 }
 
-export function buildRequestBody({ modelConfig, systemPrompt, userPrompt, searchEnabled, maxOutputTokens }) {
+export function buildRequestBody({
+  modelConfig,
+  systemPrompt,
+  userPrompt,
+  searchEnabled,
+  maxOutputTokens,
+}: BuildRequestBodyParams) {
   return {
     model: modelConfig.model,
     instructions: systemPrompt,
@@ -258,29 +415,29 @@ export function buildRequestBody({ modelConfig, systemPrompt, userPrompt, search
   };
 }
 
-export async function runOracle(options, deps = {}) {
+export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps = {}): Promise<RunOracleResult> {
   const {
     apiKey = options.apiKey ?? process.env.OPENAI_API_KEY,
-    cwd = deps.cwd ?? process.cwd(),
-    fsModule = deps.fs ?? fs,
-    log = deps.log ?? console.log,
-    write = deps.write ?? ((text) => process.stdout.write(text)),
-    now = deps.now ?? (() => performance.now()),
-    clientFactory =
-      deps.clientFactory ??
-      ((key) =>
-        new OpenAI({
-          apiKey: key,
-          timeout: 15 * 60 * 1000, // allow up to 15-minute reasoning runs
-        })),
-    client = deps.client,
+    cwd = process.cwd(),
+    fs: fsModule = fs as MinimalFsModule,
+    log = console.log,
+    write = (text: string) => process.stdout.write(text),
+    now = () => performance.now(),
+    clientFactory = ((key: string) =>
+      new OpenAI({
+        apiKey: key,
+        timeout: 15 * 60 * 1000, // allow up to 15-minute reasoning runs
+      })) as (apiKey: string) => ClientLike,
+    client,
   } = deps;
 
   const allowedPreviewModes = new Set(['summary', 'json', 'full']);
   const previewSource = options.previewMode ?? options.preview;
-  let previewMode;
+  let previewMode: PreviewMode | undefined;
   if (typeof previewSource === 'string' && previewSource.length > 0) {
-    previewMode = allowedPreviewModes.has(previewSource) ? previewSource : 'summary';
+    previewMode = allowedPreviewModes.has(previewSource)
+      ? (previewSource as PreviewMode)
+      : 'summary';
   } else if (previewSource) {
     previewMode = 'summary';
   }
@@ -365,10 +522,10 @@ export async function runOracle(options, deps = {}) {
     };
   }
 
-  const openAiClient = client ?? clientFactory(apiKey);
+  const openAiClient: ClientLike = client ?? clientFactory(apiKey);
 
   const runStart = now();
-  const stream = await openAiClient.responses.stream(requestBody);
+  const stream: ResponseStreamLike = await openAiClient.responses.stream(requestBody);
 
   let sawTextDelta = false;
 
@@ -385,7 +542,7 @@ export async function runOracle(options, deps = {}) {
       if (event.type === 'response.output_text.delta') {
         sawTextDelta = true;
         ensureAnswerHeader();
-        if (!options.silent) {
+        if (!options.silent && typeof event.delta === 'string') {
           write(event.delta);
         }
       }
@@ -425,7 +582,7 @@ export async function runOracle(options, deps = {}) {
   const cost = inputTokens * modelConfig.pricing.inputPerToken + outputTokens * modelConfig.pricing.outputPerToken;
 
   const elapsedDisplay = formatElapsed(elapsedMs);
-  const statsParts = [];
+  const statsParts: string[] = [];
   const modelLabel = modelConfig.model + (modelConfig.reasoning ? '[high]' : '');
   statsParts.push(modelLabel);
   statsParts.push(formatUSD(cost));
@@ -457,9 +614,12 @@ export async function runOracle(options, deps = {}) {
   };
 }
 
-export async function renderPromptMarkdown(options, deps = {}) {
+export async function renderPromptMarkdown(
+  options: Pick<RunOracleOptions, 'prompt' | 'file' | 'system'>,
+  deps: { cwd?: string; fs?: MinimalFsModule } = {},
+): Promise<string> {
   const cwd = deps.cwd ?? process.cwd();
-  const fsModule = deps.fs ?? fs;
+  const fsModule = deps.fs ?? (fs as MinimalFsModule);
   const files = await readFiles(options.file ?? [], { cwd, fsModule });
   const sections = createFileSections(files, cwd);
   const systemPrompt = options.system?.trim() || DEFAULT_SYSTEM_PROMPT;
