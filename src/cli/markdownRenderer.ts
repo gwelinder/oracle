@@ -1,4 +1,4 @@
-import { marked } from 'marked';
+import { Marked } from 'marked';
 import TerminalRenderer from 'marked-terminal';
 
 const renderer = new TerminalRenderer({
@@ -7,10 +7,11 @@ const renderer = new TerminalRenderer({
   tab: 2,
 });
 
+const markedWithTerminal = new Marked({ renderer: renderer as unknown as any });
+
 /**
  * Render markdown to ANSI-colored text suitable for a TTY.
  */
 export function renderMarkdownAnsi(markdown: string): string {
-  return marked.parse(markdown, { renderer }) as string;
+  return markedWithTerminal.parse(markdown) as string;
 }
-

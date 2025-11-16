@@ -12,8 +12,8 @@ import {
 import type { OracleResponseMetadata } from '../oracle.js';
 import { renderMarkdownAnsi } from './markdownRenderer.js';
 
-const isTty = process.stdout.isTTY;
-const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
+const isTty = (): boolean => Boolean(process.stdout.isTTY);
+const dim = (text: string): string => (isTty() ? kleur.dim(text) : text);
 const MAX_RENDER_BYTES = 200_000;
 
 export interface ShowStatusOptions {
@@ -111,10 +111,10 @@ export async function attachSession(sessionId: string, options?: AttachSessionOp
     const fullLog = await readSessionLog(sessionId);
     const trimmed = trimBeforeFirstAnswer(fullLog);
     const size = Buffer.byteLength(trimmed, 'utf8');
-    const canRender = wantsRender && isTty && chalk.level > 0 && size <= MAX_RENDER_BYTES;
+    const canRender = wantsRender && isTty() && chalk.level > 0 && size <= MAX_RENDER_BYTES;
     if (wantsRender && size > MAX_RENDER_BYTES) {
       console.log(dim(`Render skipped (log too large: ${size} bytes > ${MAX_RENDER_BYTES}). Showing raw text.`));
-    } else if (wantsRender && (!isTty || chalk.level === 0)) {
+    } else if (wantsRender && (!isTty() || chalk.level === 0)) {
       console.log(dim('Render requested but stdout is not a rich TTY; showing raw text.'));
     }
     if (canRender) {
