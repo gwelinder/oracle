@@ -8,13 +8,7 @@ import {
   readSessionLog,
   readSessionMetadata,
 } from '../../sessionManager.js';
-const sessionsInputSchema = z.object({
-  id: z.string().optional(),
-  hours: z.number().optional(),
-  limit: z.number().optional(),
-  includeAll: z.boolean().optional(),
-  detail: z.boolean().optional(),
-});
+import { sessionsInputSchema } from '../types.js';
 
 const sessionsOutputSchema = z.object({
   entries: z
@@ -83,6 +77,7 @@ export function registerSessionsTool(server: McpServer): void {
         try {
           const paths = await getSessionPaths(id);
           const raw = await fs.readFile(paths.request, 'utf8');
+          // Old sessions may lack a request payload; treat it as best-effort metadata.
           request = JSON.parse(raw) as Record<string, unknown>;
         } catch {
           request = undefined;

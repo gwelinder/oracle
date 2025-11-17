@@ -1,27 +1,34 @@
-# MCP Server Draft
+# MCP Server
 
-This document sketches the planned minimal MCP server that complements the existing `oracle` CLI.
+`oracle-mcp` is a minimal MCP stdio server that mirrors the Oracle CLI. It shares session storage with the CLI (`~/.oracle/sessions` or `ORACLE_HOME_DIR`) so you can mix and match: run with the CLI, inspect or re-run via MCP, or vice versa.
 
 ## Tools
 
-- `consult`
-  - Inputs: `prompt` (required), `files` (string[] globs), `model` (defaults to CLI default), `engine` (`api`|`browser`, same auto-default as the CLI), `slug?` (custom session slug).
-  - Behavior: creates a session (using the same storage as the CLI), runs it, streams progress, and returns the final output plus session metadata. No advanced browser toggles (profiles, headless, etc.). Background mode follows the CLI defaults (e.g., `gpt-5-pro` uses background automatically) and is not exposed as a MCP parameter.
-  - Emits MCP logging notifications for both chunk streams (debug level, includes byte size) and line logs (info).
+### `consult`
+- Inputs: `prompt` (required), `files` (string[] globs), `model` (defaults to CLI), `engine` (`api`|`browser`, same auto-defaults as CLI), `slug?` (custom session slug).
+- Behavior: starts a session, runs it using the chosen engine, and returns the final output plus metadata. No prompt preview, no advanced browser toggles. Background handling follows CLI defaults (e.g., GPT‑5 Pro requests run in background automatically); not exposed as a tool option.
+- Logging: emits MCP logging notifications — line logs at `info`, chunk streams at `debug` (with byte sizes). If browser is unavailable (missing DISPLAY/CHROME_PATH or guardrails), the tool returns an error payload instead of running.
 
-- `sessions`
-  - Inputs: `{hours?, limit?, includeAll?, detail?}` with the same defaults as `oracle status`.
-  - Behavior: lists stored sessions; when given a slug/ID returns a summary row by default. Set `detail: true` to fetch full stored metadata/log/request for that session (opt-in to avoid large payloads).
+### `sessions`
+- Inputs: `{id?, hours?, limit?, includeAll?, detail?}` mirroring `oracle status`.
+- Behavior: without `id`, returns a bounded list of recent sessions. With `id`/slug, returns a summary row by default; set `detail: true` to fetch full metadata, log, and stored request body so you can reload or audit a specific session.
 
-- Resources
-  - `oracle-session://{id}/{metadata|log|request}` provides read-only access to stored session artifacts via MCP resource reads, sharing the same `~/.oracle/sessions` storage.
+## Resources
+- `oracle-session://{id}/{metadata|log|request}` — read-only resources that surface stored session artifacts via MCP resource reads.
 
-## Boundaries
+## Background (how runs are scheduled)
+- The CLI chooses foreground vs. background automatically based on the model/engine (e.g., GPT‑5 Pro uses background with reconnection and cost tracking). The MCP server inherits the same defaults but does **not** expose a background flag; callers get the CLI’s safe defaults without extra switches.
 
-- Session storage is shared with the CLI at `~/.oracle/sessions` (or `ORACLE_HOME_DIR` if set).
-- Keep payloads minimal: omit prompt previews and advanced browser settings; stick to core fields needed to run or retrieve sessions.
-
-## Open items
-
-- Launch via dedicated bin `oracle-mcp`.
-- Dependency surface: add `@modelcontextprotocol/sdk` and `zod` when the server is implemented.
+## Launching & usage
+- Build once: `pnpm build`.
+- Start the stdio server: `pnpm mcp` or `oracle-mcp` (from the repo root).
+- mcporter example (stdio):
+  ```json
+  {
+    "name": "oracle",
+    "type": "stdio",
+    "command": "oracle-mcp",
+    "args": []
+  }
+  ```
+- Tools and resources operate on the same session store as `oracle status|session`.

@@ -9,10 +9,17 @@ import { registerSessionsTool } from './tools/sessions.js';
 import { registerSessionResources } from './tools/sessionResources.js';
 
 export async function startMcpServer(): Promise<void> {
-  const server = new McpServer({
-    name: 'oracle-mcp',
-    version: getCliVersion(),
-  });
+  const server = new McpServer(
+    {
+      name: 'oracle-mcp',
+      version: getCliVersion(),
+    },
+    {
+      capabilities: {
+        logging: {},
+      },
+    },
+  );
 
   registerConsultTool(server);
   registerSessionsTool(server);

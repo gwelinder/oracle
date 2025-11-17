@@ -11,14 +11,7 @@ import {
 } from '../../sessionManager.js';
 import { performSessionRun } from '../../cli/sessionRunner.js';
 import { CHATGPT_URL } from '../../browser/constants.js';
-
-const consultInputSchema = z.object({
-  prompt: z.string().min(1, 'Prompt is required.'),
-  files: z.array(z.string()).default([]),
-  model: z.string().optional(),
-  engine: z.enum(['api', 'browser']).optional(),
-  slug: z.string().optional(),
-});
+import { consultInputSchema } from '../types.js';
 
 const consultOutputSchema = z.object({
   sessionId: z.string(),
@@ -56,6 +49,7 @@ export function registerConsultTool(server: McpServer): void {
       let browserConfig: BrowserSessionConfig | undefined;
       const desiredModelLabel = model?.trim();
       if (resolvedEngine === 'browser') {
+        // Keep the browser path minimal; only forward a desired model label for the ChatGPT picker.
         browserConfig = {
           url: CHATGPT_URL,
           cookieSync: true,
@@ -122,6 +116,7 @@ export function registerConsultTool(server: McpServer): void {
           structuredContent: {
             sessionId: sessionMeta.id,
             status: 'error',
+            output,
             metadata: await readSessionMetadata(sessionMeta.id),
           },
         };
