@@ -24,8 +24,8 @@ describe('assembleBrowserPrompt', () => {
     expect(result.markdown).toContain('[SYSTEM]');
     expect(result.markdown).toContain('[USER]');
     expect(result.markdown).toContain('[FILE: a.txt]');
-    expect(result.composerText).toContain(DEFAULT_SYSTEM_PROMPT);
-    expect(result.composerText).toContain('Explain the bug');
+    expect(result.composerText).not.toContain(DEFAULT_SYSTEM_PROMPT);
+    expect(result.composerText).toBe('Explain the bug');
     expect(result.composerText).not.toContain('[SYSTEM]');
     expect(result.composerText).not.toContain('[USER]');
     expect(result.composerText).not.toContain('[FILE:');

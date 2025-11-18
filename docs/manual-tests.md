@@ -78,7 +78,7 @@ This mirrors Mario Zechner’s “What if you don’t need MCP?” technique and
 5. **Override Flag**
   - Run with `--browser-allow-cookie-errors` while intentionally breaking bindings.
   - Confirm log shows `Cookie sync failed (continuing with override)` and the run proceeds headless/logged-out.
-- Remember: the browser composer now pastes the system instructions verbatim as the first paragraph, followed by the user prompt. If you see `[SYSTEM]` blocks or any extra prefixes (e.g., “System instructions: …”) in the ChatGPT composer, something regressed in `assembleBrowserPrompt` and you should stop and file a bug.
+- Remember: the browser composer now pastes only the user prompt (plus any inline file blocks). If you see the default “You are Oracle…” text or other system-prefixed content in the ChatGPT composer, something regressed in `assembleBrowserPrompt` and you should stop and file a bug.
 - Heartbeats: Browser runs do **not** emit `--heartbeat` logs today. Heartbeat settings apply to streaming API runs only; ignore heartbeat toggles when validating browser mode.
 
 ## Post-Run Validation

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { RunOracleOptions } from '../oracle.js';
-import { readFiles, createFileSections, DEFAULT_SYSTEM_PROMPT, MODEL_CONFIGS, TOKENIZER_OPTIONS } from '../oracle.js';
+import { readFiles, createFileSections, MODEL_CONFIGS, TOKENIZER_OPTIONS } from '../oracle.js';
 import type { BrowserAttachment } from './types.js';
 
 export interface BrowserPromptArtifacts {
@@ -29,7 +29,7 @@ export async function assembleBrowserPrompt(
   const files = await readFilesFn(runOptions.file ?? [], { cwd });
   const basePrompt = (runOptions.prompt ?? '').trim();
   const userPrompt = basePrompt;
-  const systemPrompt = runOptions.system?.trim() || DEFAULT_SYSTEM_PROMPT;
+  const systemPrompt = runOptions.system?.trim() || '';
   const sections = createFileSections(files, cwd);
   const lines = ['[SYSTEM]', systemPrompt, '', '[USER]', userPrompt, ''];
   sections.forEach((section) => {
