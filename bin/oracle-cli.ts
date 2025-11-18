@@ -94,6 +94,9 @@ interface CliOptions extends OptionValues {
   wait?: boolean;
   noWait?: boolean;
   baseUrl?: string;
+  azureEndpoint?: string;
+  azureDeployment?: string;
+  azureApiVersion?: string;
 }
 
 type ResolvedCliOptions = Omit<CliOptions, 'model'> & { model: ModelName };
@@ -203,6 +206,9 @@ program
     '--base-url <url>',
     'Override the OpenAI-compatible base URL for API runs (e.g. LiteLLM proxy endpoint).',
   )
+  .option('--azure-endpoint <url>', 'Azure OpenAI Endpoint (e.g. https://resource.openai.azure.com/).')
+  .option('--azure-deployment <name>', 'Azure OpenAI Deployment Name.')
+  .option('--azure-api-version <version>', 'Azure OpenAI API Version.')
   .addOption(new Option('--browser', '(deprecated) Use --engine browser instead.').default(false).hideHelp())
   .addOption(new Option('--browser-chrome-profile <name>', 'Chrome profile name/path for cookie reuse.').hideHelp())
   .addOption(new Option('--browser-chrome-path <path>', 'Explicit Chrome or Chromium executable path.').hideHelp())
@@ -311,6 +317,15 @@ function buildRunOptions(options: ResolvedCliOptions, overrides: Partial<RunOrac
     throw new Error('Prompt is required.');
   }
   const normalizedBaseUrl = normalizeBaseUrl(overrides.baseUrl ?? options.baseUrl);
+  const azure =
+    options.azureEndpoint || overrides.azure?.endpoint
+      ? {
+          endpoint: overrides.azure?.endpoint ?? options.azureEndpoint,
+          deployment: overrides.azure?.deployment ?? options.azureDeployment,
+          apiVersion: overrides.azure?.apiVersion ?? options.azureApiVersion,
+        }
+      : undefined;
+
   return {
     prompt: options.prompt,
     model: options.model,
@@ -326,6 +341,7 @@ function buildRunOptions(options: ResolvedCliOptions, overrides: Partial<RunOrac
     previewMode: overrides.previewMode ?? options.previewMode,
     apiKey: overrides.apiKey ?? options.apiKey,
     baseUrl: normalizedBaseUrl,
+    azure,
     sessionId: overrides.sessionId ?? options.sessionId,
     verbose: overrides.verbose ?? options.verbose,
     heartbeatIntervalMs: overrides.heartbeatIntervalMs ?? resolveHeartbeatIntervalMs(options.heartbeat),
@@ -370,6 +386,7 @@ function buildRunOptionsFromMetadata(metadata: SessionMetadata): RunOracleOption
     previewMode: undefined,
     apiKey: undefined,
     baseUrl: normalizeBaseUrl(stored.baseUrl),
+    azure: stored.azure,
     sessionId: metadata.id,
     verbose: stored.verbose,
     heartbeatIntervalMs: stored.heartbeatIntervalMs,
@@ -447,6 +464,29 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   if (optionUsesDefault('baseUrl') && userConfig.apiBaseUrl) {
     options.baseUrl = userConfig.apiBaseUrl;
   }
+
+  if (optionUsesDefault('azureEndpoint')) {
+    if (process.env.AZURE_OPENAI_ENDPOINT) {
+      options.azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+    } else if (userConfig.azure?.endpoint) {
+      options.azureEndpoint = userConfig.azure.endpoint;
+    }
+  }
+  if (optionUsesDefault('azureDeployment')) {
+    if (process.env.AZURE_OPENAI_DEPLOYMENT) {
+      options.azureDeployment = process.env.AZURE_OPENAI_DEPLOYMENT;
+    } else if (userConfig.azure?.deployment) {
+      options.azureDeployment = userConfig.azure.deployment;
+    }
+  }
+  if (optionUsesDefault('azureApiVersion')) {
+    if (process.env.AZURE_OPENAI_API_VERSION) {
+      options.azureApiVersion = process.env.AZURE_OPENAI_API_VERSION;
+    } else if (userConfig.azure?.apiVersion) {
+      options.azureApiVersion = userConfig.azure.apiVersion;
+    }
+  }
+
   const cliModelArg = normalizeModelOption(options.model) || 'gpt-5-pro';
   const resolvedModel: ModelName = engine === 'browser' ? inferModelFromLabel(cliModelArg) : resolveApiModel(cliModelArg);
   const resolvedBaseUrl = normalizeBaseUrl(options.baseUrl ?? process.env.OPENAI_BASE_URL);

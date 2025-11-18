@@ -188,7 +188,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     };
   }
 
-  const openAiClient: ClientLike = client ?? clientFactory(apiKey, { baseUrl });
+  const openAiClient: ClientLike = client ?? clientFactory(apiKey, { baseUrl, azure: options.azure });
   logVerbose('Dispatching request to OpenAI Responses API...');
   const stopOscProgress = startOscProgress({
     label: useBackground ? 'Waiting for OpenAI (background)' : 'Waiting for OpenAI',

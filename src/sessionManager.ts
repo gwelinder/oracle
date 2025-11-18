@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import type { WriteStream } from 'node:fs';
-import type { TransportFailureReason } from './oracle.js';
+import type { TransportFailureReason, AzureOptions } from './oracle.js';
 
 export type SessionMode = 'api' | 'browser';
 
@@ -69,6 +69,7 @@ export interface StoredRunOptions {
   background?: boolean;
   search?: boolean;
   baseUrl?: string;
+  azure?: AzureOptions;
 }
 
 export interface SessionMetadata {
@@ -234,6 +235,7 @@ export async function initializeSession(
       background: options.background,
       search: options.search,
       baseUrl: options.baseUrl,
+      azure: options.azure,
     },
   };
   await fs.writeFile(metaPath(sessionId), JSON.stringify(metadata, null, 2), 'utf8');

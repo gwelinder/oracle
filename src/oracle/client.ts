@@ -1,7 +1,8 @@
-import OpenAI from 'openai';
+import OpenAI, { AzureOpenAI } from 'openai';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import type {
+  AzureOptions,
   ClientFactory,
   ClientLike,
   OracleRequestBody,
@@ -15,12 +16,25 @@ export function createDefaultClientFactory(): ClientFactory {
   if (CUSTOM_CLIENT_FACTORY) {
     return CUSTOM_CLIENT_FACTORY;
   }
-  return (key: string, options?: { baseUrl?: string }): ClientLike => {
-    const instance = new OpenAI({
-      apiKey: key,
-      timeout: 20 * 60 * 1000,
-      baseURL: options?.baseUrl,
-    });
+  return (key: string, options?: { baseUrl?: string; azure?: AzureOptions }): ClientLike => {
+    let instance: OpenAI;
+
+    if (options?.azure?.endpoint) {
+      instance = new AzureOpenAI({
+        apiKey: key,
+        endpoint: options.azure.endpoint,
+        apiVersion: options.azure.apiVersion,
+        deployment: options.azure.deployment,
+        timeout: 20 * 60 * 1000,
+      });
+    } else {
+      instance = new OpenAI({
+        apiKey: key,
+        timeout: 20 * 60 * 1000,
+        baseURL: options?.baseUrl,
+      });
+    }
+
     return {
       responses: {
         stream: (body: OracleRequestBody) =>
