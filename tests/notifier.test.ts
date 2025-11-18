@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveNotificationSettings } from '../src/cli/notifier.js';
+import { testHelpers, resolveNotificationSettings } from '../src/cli/notifier.js';
 
 describe('resolveNotificationSettings', () => {
   it('defaults to enabled when not in CI or SSH', () => {
@@ -25,5 +25,14 @@ describe('resolveNotificationSettings', () => {
     // biome-ignore lint/style/useNamingConvention: environment variable name
     const result = resolveNotificationSettings({ cliNotify: undefined, cliNotifySound: undefined, env: { ORACLE_NOTIFY: 'off' } });
     expect(result.enabled).toBe(false);
+  });
+
+  it('sanitizes and truncates previews to 200 characters', () => {
+    const longPreview = `\`code\` ${'a'.repeat(300)}`;
+    const sanitized = testHelpers.sanitizePreview(longPreview);
+    expect(sanitized).toBeDefined();
+    expect(sanitized?.length).toBe(200);
+    expect(sanitized?.includes('code')).toBe(true);
+    expect(sanitized?.endsWith('…')).toBe(true);
   });
 });

@@ -150,6 +150,9 @@ function sanitizePreview(preview?: string): string | undefined {
   return text;
 }
 
+// Exposed for unit tests only.
+export const testHelpers = { sanitizePreview };
+
 function inferCost(payload: NotificationContent): number | undefined {
   const model = payload.model;
   const usage = payload.usage;
