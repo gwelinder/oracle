@@ -43,7 +43,7 @@ export async function showStatus({ hours, includeAll, limit, showExamples = fals
     const statusRaw = (entry.status || 'unknown').padEnd(9);
     const status = richTty ? colorStatus(entry.status ?? 'unknown', statusRaw) : statusRaw;
     const model = (entry.model || 'n/a').padEnd(9);
-    const created = entry.createdAt.replace('T', ' ').replace('Z', '');
+    const created = formatTimestamp(entry.createdAt);
     console.log(`${created} | ${status} | ${model} | ${entry.id}`);
   }
   if (truncated) {
@@ -426,6 +426,22 @@ function extractRenderableChunks(text: string, state: LiveRenderState): { chunks
     buffer += segment;
   }
   return { chunks, remainder: buffer };
+}
+
+function formatTimestamp(iso: string): string {
+  const date = new Date(iso);
+  const locale = 'en-US';
+  const opts: Intl.DateTimeFormatOptions = {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: undefined,
+    hour12: true,
+  };
+  const formatted = date.toLocaleString(locale, opts);
+  return formatted.replace(/(, )(\d:)/, '$1 $2');
 }
 
 async function readStoredPrompt(sessionId: string): Promise<string | null> {

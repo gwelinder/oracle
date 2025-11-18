@@ -139,7 +139,7 @@ function formatTimestampAligned(iso: string): string {
     day: '2-digit',
     hour: 'numeric',
     minute: '2-digit',
-    second: '2-digit',
+    second: undefined,
     hour12: true,
   };
   const formatted = date.toLocaleString(locale, opts);
@@ -373,6 +373,7 @@ async function askOracleFlow(version: string): Promise<void> {
     verbose: false,
     heartbeatIntervalMs: undefined,
     browserInlineFiles: false,
+    browserBundleFiles: false,
     background: undefined,
   };
 
