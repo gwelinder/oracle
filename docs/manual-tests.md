@@ -94,6 +94,8 @@ Document results (pass/fail, session IDs) in PR descriptions so reviewers can au
 - 2025-11-18 — API gpt-5-pro (`api-smoke-pro-three-words`): completed in 3m08s with “Fast API verification”.
 - 2025-11-18 — Browser gpt-5.1 Instant (`browser-smoke-instant-two-words`): completed in ~10s; replied with a clarification prompt.
 - 2025-11-18 — Browser gpt-5-pro (`browser-smoke-pro-three-words`): completed in ~1m33s; response noted “Search tool used.”.
+- 2025-11-18 (rerun) — API gpt-5.1 (`api-smoke-give-two-words`): reconfirmed OK; same answer + cost bracket.
+- 2025-11-18 (rerun) — Browser gpt-5-pro (`browser-smoke-pro-three-words`): reconfirmed OK; included heartbeat progress and search tool note.
 
 ## Browser Regression Checklist (manual)
 
