@@ -29,6 +29,8 @@ import type {
   OracleRequestBody,
 } from '../src/oracle.ts';
 
+const testNonWindows = process.platform === 'win32' ? test.skip : test;
+
 chalk.level = 0;
 
 type TempFile = { dir: string; filePath: string };
@@ -763,7 +765,7 @@ describe('oracle utility helpers', () => {
     }
   });
 
-  test('readFiles allows explicitly passed default-ignored dirs', async () => {
+  testNonWindows('readFiles allows explicitly passed default-ignored dirs', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'oracle-readfiles-allow-default-'));
     try {
       const nodeModules = path.join(dir, 'node_modules');
@@ -779,7 +781,7 @@ describe('oracle utility helpers', () => {
     }
   });
 
-  test('readFiles logs and skips default-ignored dirs under project roots', async () => {
+  testNonWindows('readFiles logs and skips default-ignored dirs under project roots', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'oracle-readfiles-ignore-logs-'));
     const ignoredDirs = ['node_modules', 'dist', 'coverage'];
     try {
