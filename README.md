@@ -90,13 +90,11 @@ Put per-user defaults in `~/.oracle/config.json` (parsed as JSON5, so comments/t
 | `-e, --engine <api\|browser>` | Choose API or browser automation. Omitted: API when `OPENAI_API_KEY` is set, otherwise browser. |
 | `-m, --model <name>` | `gpt-5-pro` (default) or `gpt-5.1`. |
 | `--base-url <url>` | Point the API engine at any OpenAI-compatible endpoint (LiteLLM, Azure, etc.). |
+| `--azure-endpoint <url>` | Use Azure OpenAI (switches client automatically). |
 | `--files-report` | Print per-file token usage. |
 | `--preview [summary\|json\|full]` | Inspect the request without sending. |
-| `--render-markdown` | Print the assembled `[SYSTEM]/[USER]/[FILE]` bundle. |
-| `--wait` / `--no-wait` | Block until completion. Default: `wait` for gpt-5.1/browser; `no-wait` for gpt-5-pro API (reattach later). |
-| `-v, --verbose` | Extra logging (also surfaces advanced flags with `--help`). |
 
-More knobs (`--max-input`, cookie sync controls for browser mode, etc.) live behind `oracle --help --verbose`.
+See [docs/openai-endpoints.md](docs/openai-endpoints.md) for advanced Azure/LiteLLM configuration.
 
 ## Sessions & background runs
 

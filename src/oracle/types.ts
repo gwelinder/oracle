@@ -71,7 +71,13 @@ export interface ClientLike {
   };
 }
 
-export type ClientFactory = (apiKey: string, options?: { baseUrl?: string }) => ClientLike;
+export interface AzureOptions {
+  endpoint?: string;
+  deployment?: string;
+  apiVersion?: string;
+}
+
+export type ClientFactory = (apiKey: string, options?: { baseUrl?: string; azure?: AzureOptions }) => ClientLike;
 
 export interface RunOracleOptions {
   prompt: string;
@@ -88,6 +94,7 @@ export interface RunOracleOptions {
   previewMode?: PreviewMode;
   apiKey?: string;
   baseUrl?: string;
+  azure?: AzureOptions;
   sessionId?: string;
   verbose?: boolean;
   heartbeatIntervalMs?: number;
