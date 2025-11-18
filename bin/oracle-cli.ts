@@ -32,6 +32,7 @@ import {
   inferModelFromLabel,
   parseHeartbeatOption,
 } from '../src/cli/options.js';
+import { shouldDetachSession } from '../src/cli/detach.js';
 import { applyHiddenAliases } from '../src/cli/hiddenAliases.js';
 import { buildBrowserConfig, resolveBrowserModelLabel } from '../src/cli/browserConfig.js';
 import { performSessionRun } from '../src/cli/sessionRunner.js';
@@ -494,7 +495,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const resolvedModelCandidate: ModelName =
     engine === 'browser' ? inferModelFromLabel(cliModelArg) : resolveApiModel(cliModelArg);
   const isGemini = resolvedModelCandidate.startsWith('gemini');
-  const userForcedBrowser = options.browser || preferredEngine === 'browser';
+  const userForcedBrowser = options.browser || options.engine === 'browser';
   if (isGemini && userForcedBrowser) {
     throw new Error('Gemini is only supported via API. Use --engine api.');
   }
@@ -649,12 +650,15 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     process.cwd(),
     notifications,
   );
-  const reattachCommand = `pnpm oracle session ${sessionMeta.id}`;
-  console.log(chalk.bold(`Reattach later with: ${chalk.cyan(reattachCommand)}`));
-  console.log('');
   const liveRunOptions: RunOracleOptions = { ...baseRunOptions, sessionId: sessionMeta.id };
-  const disableDetach = process.env.ORACLE_NO_DETACH === '1';
-  const detached = disableDetach
+  const disableDetachEnv = process.env.ORACLE_NO_DETACH === '1';
+  const detachAllowed = shouldDetachSession({
+    engine,
+    model: resolvedModel,
+    waitPreference,
+    disableDetachEnv,
+  });
+  const detached = !detachAllowed
     ? false
     : await launchDetachedSession(sessionMeta.id).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -674,7 +678,16 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
 
   if (detached === false) {
-    await runInteractiveSession(sessionMeta, liveRunOptions, sessionMode, browserConfig, true, notifications, userConfig);
+    await runInteractiveSession(
+      sessionMeta,
+      liveRunOptions,
+      sessionMode,
+      browserConfig,
+      false,
+      notifications,
+      userConfig,
+      true,
+    );
     console.log(chalk.bold(`Session ${sessionMeta.id} completed`));
     return;
   }
@@ -693,6 +706,7 @@ async function runInteractiveSession(
   showReattachHint = true,
   notifications?: NotificationSettings,
   userConfig?: UserConfig,
+  suppressSummary = false,
 ): Promise<void> {
   const { logLine, writeChunk, stream } = createSessionLogWriter(sessionMeta.id);
   let headerAugmented = false;
@@ -728,10 +742,12 @@ async function runInteractiveSession(
         notifications ?? deriveNotificationSettingsFromMetadata(sessionMeta, process.env, userConfig?.notify),
     });
     const latest = await readSessionMetadata(sessionMeta.id);
-    const summary = latest ? formatCompletionSummary(latest, { includeSlug: true }) : null;
-    if (summary) {
-      console.log('\n' + chalk.green.bold(summary));
-      logLine(summary); // plain text in log, colored on stdout
+    if (!suppressSummary) {
+      const summary = latest ? formatCompletionSummary(latest, { includeSlug: true }) : null;
+      if (summary) {
+        console.log('\n' + chalk.green.bold(summary));
+        logLine(summary); // plain text in log, colored on stdout
+      }
     }
   } catch (error) {
     throw error;
