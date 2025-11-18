@@ -36,7 +36,8 @@
    - [ ] `git tag vX.Y.Z && git push origin vX.Y.Z` (always tag each release).
    - [ ] `git tag vX.Y.Z && git push --tags`
     - [ ] Create GitHub release for tag `vX.Y.Z`:
-      - Title `Oracle X.Y.Z`, body = full changelog section for that version (copy the entire block from `CHANGELOG.md`, not just highlights).
+      - Title `Oracle X.Y.Z` only (no version/date repetition inside the body).
+      - Body = full changelog section for that version, but drop the leading `## X.Y.Z — YYYY-MM-DD` heading to avoid duplicating version/date under the release title.
       - Upload assets: `oracle-<version>.tgz`, `oracle-<version>.tgz.sha1`, `oracle-<version>.tgz.sha256`.
       - Confirm the auto `Source code (zip|tar.gz)` assets are present.
    - [ ] From a clean temp directory (no package.json/node_modules), run `npx @steipete/oracle@X.Y.Z "Smoke from empty dir" --dry-run` to confirm the package installs/executes via npx.
