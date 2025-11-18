@@ -23,6 +23,7 @@
     "dist/**/*",
     "assets-oracle-icon.png",
     "vendor/oracle-notifier/OracleNotifier.swift",
+    "vendor/oracle-notifier/OracleNotifier.app/**",
     "vendor/oracle-notifier/build-notifier.sh",
     "README.md",
     "LICENSE"
