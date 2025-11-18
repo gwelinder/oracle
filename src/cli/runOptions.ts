@@ -33,6 +33,8 @@ export function resolveRunOptionsFromConfig({
   const cliModelArg = normalizeModelOption(model ?? userConfig?.model) || 'gpt-5-pro';
   const resolvedModel = resolvedEngine === 'browser' ? inferModelFromLabel(cliModelArg) : resolveApiModel(cliModelArg);
   const isGemini = resolvedModel.startsWith('gemini');
+  // Keep the resolved model id alongside the canonical model name so we can log
+  // and dispatch the exact identifier (useful for Gemini preview aliases).
   const effectiveModelId = isGemini ? resolveGeminiModelId(resolvedModel) : resolvedModel;
 
   if (isGemini && browserRequested) {

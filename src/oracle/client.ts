@@ -23,7 +23,8 @@ export function createDefaultClientFactory(): ClientFactory {
     options?: { baseUrl?: string; azure?: AzureOptions; model?: ModelName; resolvedModelId?: string },
   ): ClientLike => {
     if (options?.model && options.model.startsWith('gemini')) {
-      return createGeminiClient(key, options.model, options.resolvedModelId);
+    // Gemini client uses its own SDK; allow passing the already-resolved id for transparency/logging.
+    return createGeminiClient(key, options.model, options.resolvedModelId);
     }
 
     let instance: OpenAI;

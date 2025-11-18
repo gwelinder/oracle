@@ -140,6 +140,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   const fileCount = files.length;
   const cliVersion = getCliVersion();
   const richTty = process.stdout.isTTY && chalk.level > 0;
+  // Track the concrete model id we dispatch to (especially for Gemini preview aliases)
   const effectiveModelId =
     options.effectiveModelId ??
     (options.model.startsWith('gemini') ? resolveGeminiModelId(options.model) : modelConfig.model);

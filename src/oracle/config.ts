@@ -23,6 +23,16 @@ export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
     },
     reasoning: { effort: 'high' },
   },
+  'gemini-3-pro': {
+    model: 'gemini-3-pro',
+    tokenizer: countTokensGpt5Pro as TokenizerFn,
+    inputLimit: 200000,
+    pricing: {
+      inputPerToken: 2 / 1_000_000,
+      outputPerToken: 12 / 1_000_000,
+    },
+    reasoning: null,
+  },
 };
 
 export const DEFAULT_SYSTEM_PROMPT = [

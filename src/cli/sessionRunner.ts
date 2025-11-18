@@ -54,6 +54,9 @@ export async function performSessionRun({
   const notificationSettings = notifications ?? deriveNotificationSettingsFromMetadata(sessionMeta, process.env);
   try {
     if (mode === 'browser') {
+      if (runOptions.model.startsWith('gemini')) {
+        throw new Error('Gemini models are not available in browser mode. Re-run with --engine api.');
+      }
       if (!browserConfig) {
         throw new Error('Missing browser configuration for session.');
       }

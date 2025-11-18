@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import type { RunOracleOptions } from '../../src/oracle.js';
 import type { BrowserSessionConfig } from '../../src/sessionManager.js';
 import { runBrowserSessionExecution } from '../../src/browser/sessionRunner.js';
+import { BrowserAutomationError } from '../../src/oracle/errors.js';
 import { getCliVersion } from '../../src/version.js';
 
 const baseRunOptions: RunOracleOptions = {
@@ -111,5 +112,25 @@ describe('runBrowserSessionExecution', () => {
     expect(executeBrowser).toHaveBeenCalledWith(
       expect.objectContaining({ heartbeatIntervalMs: 15_000 }),
     );
+  });
+
+  test('throws when attempting to use Gemini in browser mode', async () => {
+    const log = vi.fn();
+    await expect(
+      runBrowserSessionExecution(
+        {
+          runOptions: { ...baseRunOptions, model: 'gemini-3-pro' },
+          browserConfig: baseConfig,
+          cwd: '/repo',
+          log,
+          cliVersion,
+        },
+        {
+          assemblePrompt: async () => ({ markdown: 'prompt', composerText: 'prompt', estimatedInputTokens: 1, attachments: [], inlineFileCount: 0, tokenEstimateIncludesInlineFiles: false }),
+          executeBrowser: async () => ({ answerText: 'text', answerMarkdown: 'markdown', tookMs: 1, answerTokens: 1, answerChars: 1 }),
+        },
+      ),
+    ).rejects.toBeInstanceOf(BrowserAutomationError);
+    expect(log).not.toHaveBeenCalled();
   });
 });

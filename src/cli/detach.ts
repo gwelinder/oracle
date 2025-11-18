@@ -13,7 +13,9 @@ export function shouldDetachSession({
   disableDetachEnv: boolean;
 }): boolean {
   if (disableDetachEnv) return false;
-  if (model.startsWith('gemini')) return false; // Gemini stays inline to avoid browser/API mismatches
-  // Original behavior: always try to detach, then reattach when waitPreference=true
+  // Gemini runs must stay inline: forcing detachment can launch the background session runner,
+  // which previously led to silent hangs when Gemini picked the browser path. Keep it simple: no detach.
+  if (model.startsWith('gemini')) return false;
+  // For other models, keep legacy behavior (detach if allowed, then reattach when waitPreference=true).
   return true;
 }

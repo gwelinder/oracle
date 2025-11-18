@@ -14,6 +14,7 @@ const MODEL_ID_MAP: Record<ModelName, string> = {
 };
 
 export function resolveGeminiModelId(modelName: ModelName): string {
+  // Map our logical Gemini names to the exact model ids expected by the SDK.
   return MODEL_ID_MAP[modelName] ?? modelName;
 }
 
