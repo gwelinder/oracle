@@ -7,6 +7,7 @@ const createHighlighter = vi.fn().mockResolvedValue({
 });
 
 vi.mock('shiki', () => ({
+  // biome-ignore lint/style/useNamingConvention: mock flag required for ESM interop
   __esModule: true,
   createHighlighter,
   bundledThemes: { 'github-dark': {} },
@@ -20,12 +21,12 @@ vi.mock('shiki', () => ({
   },
 }));
 
-let originalIsTTY: unknown;
-let originalColumns: unknown;
+let _originalIsTTY: unknown;
+let _originalColumns: unknown;
 
 beforeEach(() => {
-  originalIsTTY = process.stdout.isTTY;
-  originalColumns = process.stdout.columns;
+  _originalIsTTY = process.stdout.isTTY;
+  _originalColumns = process.stdout.columns;
   Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
   Object.defineProperty(process.stdout, 'columns', { value: 80, configurable: true });
   codeToTokens.mockReset();

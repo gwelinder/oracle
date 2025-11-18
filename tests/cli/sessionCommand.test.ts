@@ -53,7 +53,7 @@ describe('handleSessionCommand', () => {
       deleteSessionsOlderThan: vi.fn(),
       getSessionPaths: vi.fn(),
     });
-    expect(attachSession).toHaveBeenCalledWith('abc', { renderMarkdown: false });
+    expect(attachSession).toHaveBeenCalledWith('abc', expect.objectContaining({ renderMarkdown: false }));
   });
 
   test('ignores unrelated root-only flags and logs a note when attaching by id', async () => {
@@ -72,7 +72,10 @@ describe('handleSessionCommand', () => {
       getSessionPaths: vi.fn(),
     });
 
-    expect(attachSession).toHaveBeenCalledWith('swiftui-menubarextra-on-macos-15', { renderMarkdown: false });
+    expect(attachSession).toHaveBeenCalledWith(
+      'swiftui-menubarextra-on-macos-15',
+      expect.objectContaining({ renderMarkdown: false }),
+    );
     expect(showStatus).not.toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalledWith('Ignoring flags on session attach: preview');
     expect(process.exitCode).toBeUndefined();
@@ -150,7 +153,7 @@ describe('handleSessionCommand', () => {
       deleteSessionsOlderThan: vi.fn(),
       getSessionPaths: vi.fn(),
     });
-    expect(attachSession).toHaveBeenCalledWith('abc', { renderMarkdown: true });
+    expect(attachSession).toHaveBeenCalledWith('abc', expect.objectContaining({ renderMarkdown: true }));
     expect(logSpy).not.toHaveBeenCalled();
   });
 

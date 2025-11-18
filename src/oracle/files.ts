@@ -137,16 +137,91 @@ async function expandWithNativeGlob(partitioned: PartitionedFiles, cwd: string):
     return [];
   }
 
-  const matches = await fg(patterns, {
+  const dotfileOptIn = patterns.some((pattern) => includesDotfileSegment(pattern));
+
+  const gitignoreSets = await loadGitignoreSets(cwd);
+
+  const matches = (await fg(patterns, {
     cwd,
-    absolute: true,
-    dot: false, // skip dotfiles/dirs by default; users can opt-in with explicit globs
-    gitignore: true,
+    absolute: false,
+    dot: true,
     ignore: partitioned.excludePatterns,
     onlyFiles: true,
     followSymbolicLinks: false,
-  });
-  return Array.from(new Set(matches.map((match) => path.resolve(match))));
+  })) as string[];
+  const resolved = matches.map((match) => path.resolve(cwd, match));
+  const filtered = resolved.filter((filePath) => !isGitignored(filePath, gitignoreSets));
+  const finalFiles = dotfileOptIn ? filtered : filtered.filter((filePath) => !path.basename(filePath).startsWith('.'));
+  return Array.from(new Set(finalFiles));
+}
+
+type GitignoreSet = { dir: string; patterns: string[] };
+
+async function loadGitignoreSets(cwd: string): Promise<GitignoreSet[]> {
+  const gitignorePaths = await fg('**/.gitignore', { cwd, dot: true, absolute: true, onlyFiles: true, followSymbolicLinks: false });
+  const sets: GitignoreSet[] = [];
+  for (const filePath of gitignorePaths) {
+    try {
+      const raw = await fs.readFile(filePath, 'utf8');
+      const patterns = raw
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith('#'));
+      if (patterns.length > 0) {
+        sets.push({ dir: path.dirname(filePath), patterns });
+      }
+    } catch {
+      // Ignore unreadable .gitignore files
+    }
+  }
+  // Ensure deterministic parent-before-child ordering
+  return sets.sort((a, b) => a.dir.localeCompare(b.dir));
+}
+
+function isGitignored(filePath: string, sets: GitignoreSet[]): boolean {
+  for (const { dir, patterns } of sets) {
+    if (!filePath.startsWith(dir)) {
+      continue;
+    }
+    const relative = path.relative(dir, filePath) || path.basename(filePath);
+    if (matchesAny(relative, patterns)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function matchesAny(relativePath: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => matchesPattern(relativePath, pattern));
+}
+
+function matchesPattern(relativePath: string, pattern: string): boolean {
+  if (!pattern) {
+    return false;
+  }
+  const normalized = pattern.replace(/\\+/g, '/');
+  // Directory rule
+  if (normalized.endsWith('/')) {
+    const dir = normalized.slice(0, -1);
+    return relativePath === dir || relativePath.startsWith(`${dir}/`);
+  }
+  // Simple glob support (* and **)
+  const regex = globToRegex(normalized);
+  return regex.test(relativePath);
+}
+
+function globToRegex(pattern: string): RegExp {
+  const withMarkers = pattern.replace(/\*\*/g, '§§DOUBLESTAR§§').replace(/\*/g, '§§SINGLESTAR§§');
+  const escaped = withMarkers.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  const restored = escaped
+    .replace(/§§DOUBLESTAR§§/g, '.*')
+    .replace(/§§SINGLESTAR§§/g, '[^/]*');
+  return new RegExp(`^${restored}$`);
+}
+
+function includesDotfileSegment(pattern: string): boolean {
+  const segments = pattern.split('/');
+  return segments.some((segment) => segment.startsWith('.') && segment.length > 1);
 }
 
 async function expandWithCustomFs(partitioned: PartitionedFiles, fsModule: MinimalFsModule): Promise<string[]> {
