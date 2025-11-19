@@ -635,6 +635,26 @@ describe('runOracle error handling', () => {
       ),
     ).rejects.toThrow('Input too large');
   });
+
+  test('logs short-prompt guidance when prompt is brief', async () => {
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    const logs: string[] = [];
+    await runOracle(
+      {
+        prompt: 'short',
+        model: 'gpt-5-pro',
+        background: false,
+      },
+      {
+        apiKey: 'sk-test',
+        client,
+        log: (msg) => logs.push(msg),
+        write: () => true,
+      },
+    );
+    expect(logs.some((line) => line.includes('brief prompts often yield generic answers'))).toBe(true);
+  });
 });
 
 describe('runOracle streaming output', () => {

@@ -340,6 +340,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     throw new Error('API did not return a response.');
   }
 
+  // biome-ignore lint/nursery/noUnnecessaryConditions: we only add spacing when any streamed text was printed
   if (sawTextDelta && !options.silent) {
     write('\n');
     log('');
