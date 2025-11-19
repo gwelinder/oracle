@@ -45,16 +45,18 @@ export async function launchTui({ version }: LaunchTuiOptions): Promise<void> {
   for (;;) {
     const { recent, older, hasMoreOlder } = await fetchSessionBuckets(olderOffset);
     const choices: Array<SessionChoice | inquirer.Separator> = [];
-    if (recent.length > 0) {
-      choices.push(new inquirer.Separator());
-      choices.push(new inquirer.Separator('Status  Model         Mode    Timestamp           Chars  Cost  Slug'));
-      choices.push(...recent.map(toSessionChoice));
-    } else if (older.length > 0 && olderOffset === 0) {
-      choices.push(new inquirer.Separator());
-      choices.push(new inquirer.Separator('Status  Model         Mode    Timestamp           Chars  Cost  Slug'));
-      choices.push(...older.slice(0, PAGE_SIZE).map(toSessionChoice));
-    }
-    if (older.length > 0 && olderOffset > 0) {
+    const showingOlder = olderOffset > 0;
+    if (!showingOlder) {
+      if (recent.length > 0) {
+        choices.push(new inquirer.Separator());
+        choices.push(new inquirer.Separator('Status  Model         Mode    Timestamp           Chars  Cost  Slug'));
+        choices.push(...recent.map(toSessionChoice));
+      } else if (older.length > 0) {
+        choices.push(new inquirer.Separator());
+        choices.push(new inquirer.Separator('Status  Model         Mode    Timestamp           Chars  Cost  Slug'));
+        choices.push(...older.slice(0, PAGE_SIZE).map(toSessionChoice));
+      }
+    } else if (older.length > 0) {
       choices.push(new inquirer.Separator());
       choices.push(new inquirer.Separator('Status  Model         Mode    Timestamp           Chars  Cost  Slug'));
       choices.push(...older.slice(0, PAGE_SIZE).map(toSessionChoice));
@@ -65,7 +67,7 @@ export async function launchTui({ version }: LaunchTuiOptions): Promise<void> {
     if (hasMoreOlder) {
       choices.push({ name: 'Load older', value: '__more__' });
     }
-    if (olderOffset > 0) {
+    if (olderOffset > 0 || (recent.length === 0 && older.length > 0)) {
       choices.push({ name: 'Back to recent', value: '__reset__' });
     }
     choices.push({ name: 'Exit', value: '__exit__' });
