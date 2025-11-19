@@ -43,9 +43,6 @@ npx -y @steipete/oracle -p "Audit data layer" --file "src/**/*.ts" --file README
 # Dry-run (no API call) with summary estimate
 oracle --dry-run summary -p "Check release notes" --file docs/release-notes.md
 
-# Show the exact model id (useful for Gemini preview aliases)
-oracle --model gemini-3-pro --show-model-id -p "Quick smoke test"
-
 # Alternate base URL (LiteLLM, Azure, self-hosted gateways)
 OPENAI_API_KEY=sk-... oracle --base-url https://litellm.example.com/v1 -p "Summarize the risk register"
 
