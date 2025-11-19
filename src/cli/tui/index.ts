@@ -6,8 +6,8 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import { MODEL_CONFIGS, type ModelName, type RunOracleOptions } from '../../oracle.js';
 import { renderMarkdownAnsi } from '../markdownRenderer.js';
-import type { SessionMetadata, SessionMode, BrowserSessionConfig } from '../../sessionStore.js';
-import { sessionStore } from '../../sessionStore.js';
+import type { SessionMetadata, SessionMode, BrowserSessionConfig, SessionModelRun } from '../../sessionStore.js';
+import { sessionStore, pruneOldSessions } from '../../sessionStore.js';
 import { performSessionRun } from '../sessionRunner.js';
 import { MAX_RENDER_BYTES, trimBeforeFirstAnswer } from '../sessionDisplay.js';
 import { buildBrowserConfig, resolveBrowserModelLabel } from '../browserConfig.js';
@@ -228,6 +228,9 @@ async function showSessionDetail(sessionId: string): Promise<void> {
     }
     console.clear();
     printSessionHeader(meta);
+    if (meta.models && meta.models.length > 0) {
+      printModelSummaries(meta.models);
+    }
     const prompt = await readStoredPrompt(sessionId);
     if (prompt) {
       console.log(chalk.bold('Prompt:'));
@@ -243,7 +246,14 @@ async function showSessionDetail(sessionId: string): Promise<void> {
     await renderSessionLog(sessionId);
 
     const isRunning = meta.status === 'running';
+    const modelActions =
+      meta.models?.map((run) => ({
+        name: `View ${run.model} log (${run.status})`,
+        value: `log:${run.model}`,
+      })) ?? [];
     const actions: Array<{ name: string; value: string }> = [
+      { name: 'View combined log', value: 'log:__all__' },
+      ...modelActions,
       ...(isRunning ? [{ name: 'Refresh', value: 'refresh' }] : []),
       { name: 'Back', value: 'back' },
     ];
@@ -259,12 +269,20 @@ async function showSessionDetail(sessionId: string): Promise<void> {
     if (next === 'back') {
       return;
     }
-    // refresh loops
+    if (next === 'refresh') {
+      continue;
+    }
+    if (next.startsWith('log:')) {
+      const [, target] = next.split(':');
+      await renderSessionLog(sessionId, target === '__all__' ? undefined : target);
+    }
   }
 }
 
-async function renderSessionLog(sessionId: string): Promise<void> {
-  const raw = await sessionStore.readLog(sessionId);
+async function renderSessionLog(sessionId: string, model?: string): Promise<void> {
+  const raw = model ? await sessionStore.readModelLog(sessionId, model) : await sessionStore.readLog(sessionId);
+  const headerLabel = model ? `Log (${model})` : 'Log';
+  console.log(chalk.bold(headerLabel));
   const text = trimBeforeFirstAnswer(raw);
   const size = Buffer.byteLength(text, 'utf8');
   if (size > MAX_RENDER_BYTES) {
@@ -274,6 +292,11 @@ async function renderSessionLog(sessionId: string): Promise<void> {
       ),
     );
     process.stdout.write(text);
+    console.log('');
+    return;
+  }
+  if (!text.trim()) {
+    console.log(dim('(log is empty)'));
     console.log('');
     return;
   }
@@ -304,6 +327,20 @@ function printSessionHeader(meta: SessionMetadata): void {
   if (meta.errorMessage) {
     console.log(chalk.red(`Error: ${meta.errorMessage}`));
   }
+}
+
+function printModelSummaries(models: SessionModelRun[]): void {
+  if (models.length === 0) {
+    return;
+  }
+  console.log(chalk.bold('Models:'));
+  for (const run of models) {
+    const usage = run.usage
+      ? ` tok=${run.usage.outputTokens?.toLocaleString() ?? 0}/${run.usage.totalTokens?.toLocaleString() ?? 0}`
+      : '';
+    console.log(` - ${chalk.cyan(run.model)} — ${run.status}${usage}`);
+  }
+  console.log('');
 }
 
 interface WizardAnswers {
@@ -435,6 +472,7 @@ async function askOracleFlow(version: string, userConfig: UserConfig): Promise<v
   }
   const promptWithSuffix = userConfig.promptSuffix ? `${prompt.trim()}\n${userConfig.promptSuffix}` : prompt;
   await sessionStore.ensureStorage();
+  await pruneOldSessions(userConfig.sessionRetentionHours, (message) => console.log(chalk.dim(message)));
   const normalizedMultiModels =
     Array.isArray(answers.models) && answers.models.length > 0
       ? Array.from(

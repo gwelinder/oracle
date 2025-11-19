@@ -41,6 +41,7 @@ export interface UserConfig {
   promptSuffix?: string;
   apiBaseUrl?: string;
   azure?: AzureConfig;
+  sessionRetentionHours?: number;
 }
 
 function resolveConfigPath(): string {

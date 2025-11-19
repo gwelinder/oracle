@@ -118,3 +118,16 @@ export type {
   SessionStatus,
   SessionModelRun,
 } from './sessionManager.js';
+
+export async function pruneOldSessions(
+  hours?: number,
+  log?: (message: string) => void,
+): Promise<void> {
+  if (typeof hours !== 'number' || Number.isNaN(hours) || hours <= 0) {
+    return;
+  }
+  const result = await sessionStore.deleteOlderThan({ hours });
+  if (result.deleted > 0) {
+    log?.(`Pruned ${result.deleted} stored sessions older than ${hours}h.`);
+  }
+}

@@ -31,6 +31,7 @@ vi.mock('../../../src/sessionStore.ts', () => ({
     readRequest: readRequestMock,
     readLog: readLogMock,
     listSessions: listSessionsMock,
+    deleteOlderThan: vi.fn(),
     getPaths: getPathsMock,
     sessionsDir: vi.fn().mockReturnValue('/tmp/.oracle/sessions'),
   },

@@ -9,7 +9,7 @@ import { resolveEngine, type EngineMode, defaultWaitPreference } from '../src/cl
 import { shouldRequirePrompt } from '../src/cli/promptRequirement.js';
 import chalk from 'chalk';
 import type { SessionMetadata, SessionMode, BrowserSessionConfig } from '../src/sessionStore.js';
-import { sessionStore } from '../src/sessionStore.js';
+import { sessionStore, pruneOldSessions } from '../src/sessionStore.js';
 import { runOracle, renderPromptMarkdown, readFiles } from '../src/oracle.js';
 import type { ModelName, PreviewMode, RunOracleOptions } from '../src/oracle.js';
 import { CHATGPT_URL } from '../src/browserMode.js';
@@ -103,6 +103,7 @@ interface CliOptions extends OptionValues {
   azureDeployment?: string;
   azureApiVersion?: string;
   showModelId?: boolean;
+  retainHours?: number;
 }
 
 type ResolvedCliOptions = Omit<CliOptions, 'model'> & { model: ModelName; models?: ModelName[] };
@@ -269,6 +270,11 @@ program
     new Option('--browser-inline-files', 'Paste files directly into the ChatGPT composer instead of uploading attachments.').default(false),
   )
   .addOption(new Option('--browser-bundle-files', 'Bundle all attachments into a single archive before uploading.').default(false))
+  .option(
+    '--retain-hours <hours>',
+    'Prune stored sessions older than this many hours before running (set 0 to disable).',
+    parseFloatOption,
+  )
   .option('--debug-help', 'Show the advanced/debug option set and exit.', false)
   .option('--heartbeat <seconds>', 'Emit periodic in-progress updates (0 to disable).', parseHeartbeatOption, 30)
   .addOption(new Option('--wait').default(undefined))
@@ -483,6 +489,20 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
   const previewMode = resolvePreviewMode(options.dryRun || options.preview);
 
+  const applyRetentionOption = (): void => {
+    if (optionUsesDefault('retainHours') && typeof userConfig.sessionRetentionHours === 'number') {
+      options.retainHours = userConfig.sessionRetentionHours;
+    }
+    const envRetention = process.env.ORACLE_RETAIN_HOURS;
+    if (optionUsesDefault('retainHours') && envRetention) {
+      const parsed = Number.parseFloat(envRetention);
+      if (!Number.isNaN(parsed)) {
+        options.retainHours = parsed;
+      }
+    }
+  };
+  applyRetentionOption();
+
   if (userCliArgs.length === 0) {
     if (tuiEnabled()) {
       await launchTui({ version: VERSION });
@@ -492,6 +512,9 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     program.help({ error: false });
     return;
   }
+  const retentionHours = typeof options.retainHours === 'number' ? options.retainHours : undefined;
+  await sessionStore.ensureStorage();
+  await pruneOldSessions(retentionHours, (message) => console.log(chalk.dim(message)));
 
   if (options.debugHelp) {
     printDebugHelp(program.name());
