@@ -8,14 +8,8 @@ import type { OptionValues } from 'commander';
 import { resolveEngine, type EngineMode, defaultWaitPreference } from '../src/cli/engine.js';
 import { shouldRequirePrompt } from '../src/cli/promptRequirement.js';
 import chalk from 'chalk';
-import {
-  ensureSessionStorage,
-  initializeSession,
-  readSessionMetadata,
-  createSessionLogWriter,
-  deleteSessionsOlderThan,
-} from '../src/sessionManager.js';
 import type { SessionMetadata, SessionMode, BrowserSessionConfig } from '../src/sessionManager.js';
+import { sessionStore } from '../src/sessionStore.js';
 import { runOracle, renderPromptMarkdown, readFiles } from '../src/oracle.js';
 import type { ModelName, PreviewMode, RunOracleOptions } from '../src/oracle.js';
 import { CHATGPT_URL } from '../src/browserMode.js';
@@ -330,7 +324,7 @@ const statusCommand = program
       }
       const hours = statusOptions.hours;
       const includeAll = statusOptions.all;
-      const result = await deleteSessionsOlderThan({ hours, includeAll });
+      const result = await sessionStore.deleteOlderThan({ hours, includeAll });
       const scope = includeAll ? 'all stored sessions' : `sessions older than ${hours}h`;
       console.log(formatSessionCleanupMessage(result, scope));
       return;
@@ -456,7 +450,7 @@ function getBrowserConfigFromMetadata(metadata: SessionMetadata): BrowserSession
 
 async function runRootCommand(options: CliOptions): Promise<void> {
   if (process.env.ORACLE_FORCE_TUI === '1') {
-    await ensureSessionStorage();
+    await sessionStore.ensureStorage();
     await launchTui({ version: VERSION });
     return;
   }
@@ -713,7 +707,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     return;
   }
 
-  await ensureSessionStorage();
+  await sessionStore.ensureStorage();
   const baseRunOptions = buildRunOptions(resolvedOptions, {
     preview: false,
     previewMode: undefined,
@@ -725,7 +719,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     console.log(chalk.dim('Note: search is not available in browser engine; ignoring search=false.'));
     baseRunOptions.search = undefined;
   }
-  const sessionMeta = await initializeSession(
+  const sessionMeta = await sessionStore.createSession(
     {
       ...baseRunOptions,
       mode: sessionMode,
@@ -794,7 +788,7 @@ async function runInteractiveSession(
   userConfig?: UserConfig,
   suppressSummary = false,
 ): Promise<void> {
-  const { logLine, writeChunk, stream } = createSessionLogWriter(sessionMeta.id);
+  const { logLine, writeChunk, stream } = sessionStore.createLogWriter(sessionMeta.id);
   let headerAugmented = false;
   const combinedLog = (message = ''): void => {
     if (!headerAugmented && message.startsWith('oracle (')) {
@@ -827,7 +821,7 @@ async function runInteractiveSession(
       notifications:
         notifications ?? deriveNotificationSettingsFromMetadata(sessionMeta, process.env, userConfig?.notify),
     });
-    const latest = await readSessionMetadata(sessionMeta.id);
+    const latest = await sessionStore.readSession(sessionMeta.id);
     if (!suppressSummary) {
       const summary = latest ? formatCompletionSummary(latest, { includeSlug: true }) : null;
       if (summary) {
@@ -863,7 +857,7 @@ async function launchDetachedSession(sessionId: string): Promise<boolean> {
 }
 
 async function executeSession(sessionId: string) {
-  const metadata = await readSessionMetadata(sessionId);
+  const metadata = await sessionStore.readSession(sessionId);
   if (!metadata) {
     console.error(chalk.red(`No session found with ID ${sessionId}`));
     process.exitCode = 1;
@@ -872,7 +866,7 @@ async function executeSession(sessionId: string) {
   const runOptions = buildRunOptionsFromMetadata(metadata);
   const sessionMode = getSessionMode(metadata);
   const browserConfig = getBrowserConfigFromMetadata(metadata);
-  const { logLine, writeChunk, stream } = createSessionLogWriter(sessionId);
+  const { logLine, writeChunk, stream } = sessionStore.createLogWriter(sessionId);
   const userConfig = (await loadUserConfig()).config;
   const notifications = deriveNotificationSettingsFromMetadata(metadata, process.env, userConfig.notify);
   try {

@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import type { Command, OptionValues } from 'commander';
 import { usesDefaultStatusFilters } from './options.js';
 import { attachSession, showStatus, type AttachSessionOptions, type ShowStatusOptions } from './sessionDisplay.js';
-import { deleteSessionsOlderThan, getSessionPaths } from '../sessionManager.js';
+import { sessionStore } from '../sessionStore.js';
 
 export interface StatusOptions extends OptionValues {
   hours: number;
@@ -22,16 +22,16 @@ interface SessionCommandDependencies {
   showStatus: (options: ShowStatusOptions) => Promise<void> | void;
   attachSession: (sessionId: string, options?: AttachSessionOptions) => Promise<void>;
   usesDefaultStatusFilters: (cmd: Command) => boolean;
-  deleteSessionsOlderThan: typeof deleteSessionsOlderThan;
-  getSessionPaths: typeof import('../sessionManager.js').getSessionPaths;
+  deleteSessionsOlderThan: (options?: { hours?: number; includeAll?: boolean }) => Promise<{ deleted: number; remaining: number }>;
+  getSessionPaths: (sessionId: string) => Promise<{ dir: string; metadata: string; log: string; request: string }>;
 }
 
 const defaultDependencies: SessionCommandDependencies = {
   showStatus,
   attachSession,
   usesDefaultStatusFilters,
-  deleteSessionsOlderThan,
-  getSessionPaths,
+  deleteSessionsOlderThan: (options) => sessionStore.deleteOlderThan(options),
+  getSessionPaths: (sessionId) => sessionStore.getPaths(sessionId),
 };
 
 const SESSION_OPTION_KEYS = new Set(['hours', 'limit', 'all', 'clear', 'clean', 'render', 'renderMarkdown', 'path', 'model']);

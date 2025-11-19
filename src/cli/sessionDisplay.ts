@@ -7,20 +7,12 @@ import type {
   SessionStatus,
   SessionModelRun,
 } from '../sessionManager.js';
-import {
-  filterSessionsByRange,
-  listSessionsMetadata,
-  readSessionLog,
-  readModelLog,
-  readSessionMetadata,
-  readSessionRequest,
-  SESSIONS_DIR,
-  wait,
-} from '../sessionManager.js';
+import { wait } from '../sessionManager.js';
 import type { OracleResponseMetadata } from '../oracle.js';
 import { renderMarkdownAnsi } from './markdownRenderer.js';
 import { formatElapsed, formatUSD } from '../oracle/format.js';
 import { MODEL_CONFIGS } from '../oracle.js';
+import { sessionStore } from '../sessionStore.js';
 
 const isTty = (): boolean => Boolean(process.stdout.isTTY);
 const dim = (text: string): string => (isTty() ? kleur.dim(text) : text);
@@ -45,8 +37,8 @@ export async function showStatus({
   showExamples = false,
   modelFilter,
 }: ShowStatusOptions): Promise<void> {
-  const metas = await listSessionsMetadata();
-  const { entries, truncated, total } = filterSessionsByRange(metas, { hours, includeAll, limit });
+  const metas = await sessionStore.listSessions();
+  const { entries, truncated, total } = sessionStore.filterSessions(metas, { hours, includeAll, limit });
   const filteredEntries = modelFilter ? entries.filter((entry) => matchesModel(entry, modelFilter)) : entries;
   const richTty = process.stdout.isTTY && chalk.level > 0;
   if (!filteredEntries.length) {
@@ -70,9 +62,10 @@ export async function showStatus({
     console.log(`${created} | ${charLabel} | ${costLabel} | ${status} | ${modelColumn} | ${entry.id}`);
   }
   if (truncated) {
+    const sessionsDir = sessionStore.sessionsDir();
     console.log(
       chalk.yellow(
-        `Showing ${entries.length} of ${total} sessions from the requested range. Run "oracle session --clear" or delete entries in ${SESSIONS_DIR} to free space, or rerun with --status-limit/--status-all.`,
+        `Showing ${entries.length} of ${total} sessions from the requested range. Run "oracle session --clear" or delete entries in ${sessionsDir} to free space, or rerun with --status-limit/--status-all.`,
       ),
     );
   }
@@ -112,7 +105,7 @@ type LiveRenderState = {
 };
 
 export async function attachSession(sessionId: string, options?: AttachSessionOptions): Promise<void> {
-  const metadata = await readSessionMetadata(sessionId);
+  const metadata = await sessionStore.readSession(sessionId);
   if (!metadata) {
     console.error(chalk.red(`No session found with ID ${sessionId}`));
     process.exitCode = 1;
@@ -273,7 +266,7 @@ export async function attachSession(sessionId: string, options?: AttachSessionOp
 
   // biome-ignore lint/nursery/noUnnecessaryConditions: deliberate infinite poll
   while (true) {
-    const latest = await readSessionMetadata(sessionId);
+    const latest = await sessionStore.readSession(sessionId);
     if (!latest) {
       break;
     }
@@ -490,13 +483,13 @@ async function buildSessionLogForDisplay(
   modelFilter?: string,
 ): Promise<string> {
   const normalizedFilter = modelFilter?.trim().toLowerCase();
-  const freshMetadata = (await readSessionMetadata(sessionId)) ?? fallbackMeta;
+  const freshMetadata = (await sessionStore.readSession(sessionId)) ?? fallbackMeta;
   const models = freshMetadata.models ?? fallbackMeta.models ?? [];
   if (models.length === 0) {
     if (normalizedFilter) {
-      return await readModelLog(sessionId, modelFilter as string);
+      return await sessionStore.readModelLog(sessionId, modelFilter as string);
     }
-    return await readSessionLog(sessionId);
+    return await sessionStore.readLog(sessionId);
   }
   const candidates =
     normalizedFilter != null
@@ -507,7 +500,7 @@ async function buildSessionLogForDisplay(
   }
   const sections: string[] = [];
   for (const model of candidates) {
-    const body = await readModelLog(sessionId, model.model);
+    const body = await sessionStore.readModelLog(sessionId, model.model);
     sections.push(`=== ${model.model} ===\n${body}`.trimEnd());
   }
   return sections.join('\n\n');
@@ -613,11 +606,11 @@ function formatCostTable(cost: number): string {
 }
 
 async function readStoredPrompt(sessionId: string): Promise<string | null> {
-  const request = await readSessionRequest(sessionId);
+  const request = await sessionStore.readRequest(sessionId);
   if (request?.prompt && request.prompt.trim().length > 0) {
     return request.prompt;
   }
-  const meta = await readSessionMetadata(sessionId);
+  const meta = await sessionStore.readSession(sessionId);
   if (meta?.options?.prompt && meta.options.prompt.trim().length > 0) {
     return meta.options.prompt;
   }
