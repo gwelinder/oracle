@@ -33,10 +33,12 @@
    - [ ] `npm view @steipete/oracle version` (and optionally `npm view @steipete/oracle time`) to confirm the registry shows the new version.
    - [ ] Verify positional prompt still works: `npx -y @steipete/oracle "Test prompt" --dry-run`.
 6. **Post-publish**
-   - [ ] Promote desired dist-tag (e.g., `npm dist-tag add @steipete/oracle@X.Y.Z latest`).
-   - [ ] `git tag vX.Y.Z && git push origin vX.Y.Z` (always tag each release).
-   - [ ] `git tag vX.Y.Z && git push --tags`
-    - [ ] Create GitHub release for tag `vX.Y.Z`:
+  - [ ] Verify GitHub release exists for `vX.Y.Z` and has the intended assets (tarball + checksums if produced). Add missing assets before announcing.
+  - [ ] Confirm npm shows the new version: `npm view @steipete/oracle version` and `npx -y @steipete/oracle@X.Y.Z --version`.
+  - [ ] Promote desired dist-tag (e.g., `npm dist-tag add @steipete/oracle@X.Y.Z latest`).
+  - [ ] `git tag vX.Y.Z && git push origin vX.Y.Z` (always tag each release).
+  - [ ] `git tag vX.Y.Z && git push --tags`
+   - [ ] Create GitHub release for tag `vX.Y.Z`:
       - Title `Oracle X.Y.Z` only (no version/date repetition inside the body).
       - Body = full changelog section for that version, but drop the leading `## X.Y.Z — YYYY-MM-DD` heading to avoid duplicating version/date under the release title.
       - Upload assets: `oracle-<version>.tgz`, `oracle-<version>.tgz.sha1`, `oracle-<version>.tgz.sha256`.
