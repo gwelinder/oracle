@@ -94,6 +94,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     client = await connectToChrome(chrome.port, logger);
     const markConnectionLost = () => {
       connectionClosedUnexpectedly = true;
+      logger('Chrome window closed; attempting to abort run.');
     };
     client.on('disconnect', markConnectionLost);
     const { Network, Page, Runtime, Input, DOM } = client;
@@ -207,6 +208,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const durationMs = Date.now() - startedAt;
     const answerChars = answerText.length;
     const answerTokens = estimateTokenCount(answerMarkdown);
+    if (connectionClosedUnexpectedly) {
+      throw new Error('Chrome window closed before oracle finished. Please keep it open until completion.');
+    }
     return {
       answerText,
       answerMarkdown,
