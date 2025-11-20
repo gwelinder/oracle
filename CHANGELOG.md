@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 - GPT-5.1 Pro and GPT-5 Pro API runs now default to a 60-minute timeout (was 20m) and the “zombie” detector waits the same hour before marking sessions as `error`; CLI messaging/docs updated accordingly so a single “auto” limit covers both behaviors.
 - Browser-to-API coercion now happens automatically for GPT-5.1 Codex and Gemini (with a console hint) instead of failing when `--engine browser` is set.
 - Gemini client now uses Google’s `@google/genai` SDK (replacing the deprecated `@google/generative-ai`) while preserving streaming final responses and token accounting.
+- Session slugs now trim individual words to 10 characters to keep auto-generated IDs readable when prompts include very long tokens.
 
 ## 1.3.0 — 2025-11-19
 
