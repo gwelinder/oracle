@@ -23,4 +23,12 @@ describe('copyToClipboard', () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe(error);
   });
+
+  test('coerces non-string input rejection from clipboardy', async () => {
+    const typeError = new TypeError('Expected a string');
+    (clipboard.write as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(typeError);
+    const result = await copyToClipboard(123 as unknown as string);
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(typeError);
+  });
 });

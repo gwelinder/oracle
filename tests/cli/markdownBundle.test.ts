@@ -22,4 +22,20 @@ describe('buildMarkdownBundle', () => {
     expect(bundle.promptWithFiles).toContain('hello world');
     expect(bundle.files).toHaveLength(1);
   });
+
+  test('walks directories and applies excludes in file globs', async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), 'oracle-md-'));
+    const keep = path.join(cwd, 'keep.txt');
+    const skip = path.join(cwd, 'skip.test.txt');
+    await writeFile(keep, 'keep me', 'utf8');
+    await writeFile(skip, 'skip me', 'utf8');
+
+    const bundle = await buildMarkdownBundle(
+      { prompt: 'Hello', file: [`${cwd}/**/*.txt`, `!${cwd}/**/*.test.txt`] },
+      { cwd },
+    );
+
+    expect(bundle.markdown).toContain('keep me');
+    expect(bundle.markdown).not.toContain('skip me');
+  });
 });
