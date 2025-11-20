@@ -30,7 +30,7 @@ import { formatElapsed } from '../oracle/format.js';
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from './types.js';
 export { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
-export { parseDuration, delay } from './utils.js';
+export { parseDuration, delay, normalizeChatgptUrl } from './utils.js';
 
 export async function runBrowserMode(options: BrowserRunOptions): Promise<BrowserRunResult> {
   const promptText = options.prompt?.trim();
@@ -223,9 +223,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const durationMs = Date.now() - startedAt;
     const answerChars = answerText.length;
     const answerTokens = estimateTokenCount(answerMarkdown);
-    if (connectionClosedUnexpectedly) {
-      throw new Error('Chrome window closed before oracle finished. Please keep it open until completion.');
-    }
     return {
       answerText,
       answerMarkdown,

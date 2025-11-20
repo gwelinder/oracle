@@ -21,7 +21,8 @@ Oracle reads an optional per-user config from `~/.oracle/config.json`. The file 
     chromeProfile: "Default",
     chromePath: null,
     chromeCookiePath: null,
-    url: null,
+    chatgptUrl: "https://chatgpt.com/g/g-p-691edc9fec088191b553a35093da1ea8-oracle/project",
+    url: null, // alias for chatgptUrl (kept for back-compat)
     timeoutMs: 1200000,
     inputTimeoutMs: 30000,
     headless: false,
@@ -46,6 +47,7 @@ CLI flags → `config.json` → environment → built-in defaults.
 - `OPENAI_API_KEY` only influences engine selection when neither the CLI nor `config.json` specify an engine (API when present, otherwise browser).
 - `ORACLE_NOTIFY*` env vars still layer on top of the config’s `notify` block.
 - `sessionRetentionHours` controls the default value for `--retain-hours`. When unset, `ORACLE_RETAIN_HOURS` (if present) becomes the fallback, and the CLI flag still wins over both.
+- `browser.chatgptUrl` lets you target a specific ChatGPT base URL (e.g., a folder/workspace link); `browser.url` remains as a legacy alias.
 
 If the config is missing or invalid, Oracle falls back to defaults and prints a warning for parse errors.
 

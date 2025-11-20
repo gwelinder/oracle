@@ -12,7 +12,7 @@ import type { SessionMetadata, SessionMode, BrowserSessionConfig } from '../src/
 import { sessionStore, pruneOldSessions } from '../src/sessionStore.js';
 import { DEFAULT_MODEL, MODEL_CONFIGS, runOracle, renderPromptMarkdown, readFiles } from '../src/oracle.js';
 import type { ModelName, PreviewMode, RunOracleOptions } from '../src/oracle.js';
-import { CHATGPT_URL } from '../src/browser/constants.js';
+import { CHATGPT_URL, normalizeChatgptUrl } from '../src/browserMode.js';
 import { createRemoteBrowserExecutor } from '../src/remote/client.js';
 import { applyHelpStyling } from '../src/cli/help.js';
 import {
@@ -82,6 +82,7 @@ interface CliOptions extends OptionValues {
   browserChromeProfile?: string;
   browserChromePath?: string;
   browserCookiePath?: string;
+  chatgptUrl?: string;
   browserUrl?: string;
   browserTimeout?: string;
   browserInputTimeout?: string;
@@ -260,7 +261,13 @@ program
   .addOption(
     new Option('--browser-cookie-path <path>', 'Explicit Chrome/Chromium cookie DB path for session reuse.'),
   )
-  .addOption(new Option('--browser-url <url>', `Override the ChatGPT URL (default ${CHATGPT_URL}).`).hideHelp())
+  .addOption(
+    new Option(
+      '--chatgpt-url <url>',
+      `Override the ChatGPT web URL (e.g., workspace/folder like https://chatgpt.com/g/.../project; default ${CHATGPT_URL}).`,
+    ),
+  )
+  .addOption(new Option('--browser-url <url>', `Alias for --chatgpt-url (default ${CHATGPT_URL}).`).hideHelp())
   .addOption(new Option('--browser-timeout <ms|s|m>', 'Maximum time to wait for an answer (default 1200s / 20m).').hideHelp())
   .addOption(
     new Option('--browser-input-timeout <ms|s|m>', 'Maximum time to wait for the prompt textarea (default 30s).').hideHelp(),
@@ -1027,10 +1034,11 @@ function printDebugHelp(cliName: string): void {
   console.log('');
   console.log(chalk.bold('Browser Options'));
   printDebugOptionGroup([
+    ['--chatgpt-url <url>', 'Override the ChatGPT web URL (workspace/folder targets).'],
     ['--browser-chrome-profile <name>', 'Reuse cookies from a specific Chrome profile.'],
     ['--browser-chrome-path <path>', 'Point to a custom Chrome/Chromium binary.'],
     ['--browser-cookie-path <path>', 'Use a specific Chrome/Chromium cookie store file.'],
-    ['--browser-url <url>', 'Hit an alternate ChatGPT host.'],
+    ['--browser-url <url>', 'Alias for --chatgpt-url.'],
     ['--browser-timeout <ms|s|m>', 'Cap total wait time for the assistant response.'],
     ['--browser-input-timeout <ms|s|m>', 'Cap how long we wait for the composer textarea.'],
     ['--browser-no-cookie-sync', 'Skip copying cookies from your main profile.'],
@@ -1071,6 +1079,14 @@ function applyBrowserDefaultsFromConfig(options: CliOptions, config: UserConfig)
   if (!browser) return;
   const source = (key: keyof CliOptions) => program.getOptionValueSource?.(key as string);
 
+  const configuredChatgptUrl = browser.chatgptUrl ?? browser.url;
+  if (source('chatgptUrl') === 'default' && configuredChatgptUrl !== undefined) {
+    try {
+      options.chatgptUrl = normalizeChatgptUrl(configuredChatgptUrl ?? '', CHATGPT_URL);
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
   if (source('browserChromeProfile') === 'default' && browser.chromeProfile !== undefined) {
     options.browserChromeProfile = browser.chromeProfile ?? undefined;
   }

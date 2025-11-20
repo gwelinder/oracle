@@ -1,11 +1,13 @@
 import { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
 import type { BrowserAutomationConfig, ResolvedBrowserConfig } from './types.js';
+import { normalizeChatgptUrl } from './utils.js';
 
 export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   chromeProfile: null,
   chromePath: null,
   chromeCookiePath: null,
   url: CHATGPT_URL,
+  chatgptUrl: CHATGPT_URL,
   timeoutMs: 1_200_000,
   inputTimeoutMs: 30_000,
   cookieSync: true,
@@ -25,10 +27,13 @@ export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined
   const envAllowCookieErrors =
     (process.env.ORACLE_BROWSER_ALLOW_COOKIE_ERRORS ?? '').trim().toLowerCase() === 'true' ||
     (process.env.ORACLE_BROWSER_ALLOW_COOKIE_ERRORS ?? '').trim() === '1';
+  const rawUrl = config?.chatgptUrl ?? config?.url ?? DEFAULT_BROWSER_CONFIG.url;
+  const normalizedUrl = normalizeChatgptUrl(rawUrl ?? DEFAULT_BROWSER_CONFIG.url, DEFAULT_BROWSER_CONFIG.url);
   return {
     ...DEFAULT_BROWSER_CONFIG,
     ...(config ?? {}),
-    url: config?.url ?? DEFAULT_BROWSER_CONFIG.url,
+    url: normalizedUrl,
+    chatgptUrl: normalizedUrl,
     timeoutMs: config?.timeoutMs ?? DEFAULT_BROWSER_CONFIG.timeoutMs,
     inputTimeoutMs: config?.inputTimeoutMs ?? DEFAULT_BROWSER_CONFIG.inputTimeoutMs,
     cookieSync: config?.cookieSync ?? DEFAULT_BROWSER_CONFIG.cookieSync,

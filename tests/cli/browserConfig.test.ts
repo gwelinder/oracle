@@ -41,7 +41,7 @@ describe('buildBrowserConfig', () => {
       chromeProfile: 'Profile 2',
       chromePath: '/Applications/Chrome.app',
       chromeCookiePath: '/tmp/cookies.db',
-      url: 'https://chat.example.com',
+      url: 'https://chat.example.com/',
       timeoutMs: 120_000,
       inputTimeoutMs: 5_000,
       cookieSync: false,
@@ -91,6 +91,23 @@ describe('buildBrowserConfig', () => {
       remoteChrome: 'remote-host:9333',
     });
     expect(config.remoteChrome).toEqual({ host: 'remote-host', port: 9_333 });
+  });
+
+  test('normalizes chatgpt-url alias and adds https when missing', async () => {
+    const config = await buildBrowserConfig({
+      model: 'gpt-5.1',
+      chatgptUrl: 'chatgpt.example.com/workspace',
+    });
+    expect(config.url).toBe('https://chatgpt.example.com/workspace');
+  });
+
+  test('rejects invalid chatgpt URL protocols', async () => {
+    await expect(
+      buildBrowserConfig({
+        model: 'gpt-5.1',
+        chatgptUrl: 'ftp://chatgpt.example.com',
+      }),
+    ).rejects.toThrow(/http/i);
   });
 
   test('accepts IPv6 remoteChrome targets wrapped in brackets', async () => {
