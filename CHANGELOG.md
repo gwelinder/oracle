@@ -12,7 +12,7 @@ All notable changes to this project will be documented in this file.
 - GPT-5.1 Codex (API-only) now works end-to-end with high reasoning; `--model gpt-5.1-codex` forces the API engine automatically so browser runs keep targeting ChatGPT Instant.
 - GPT-5.1 Codex Max isn’t available via API yet. As soon as OpenAI opens the endpoint we’ll add it to `MODEL_CONFIGS`, but for now the CLI rejects that model name.
 - GPT-5.1 Pro API support; it’s the new default model.
-- Added `gpt-5.0-pro` (aliases: `gpt-5-pro`, `gpt-5`) alongside GPT-5.1 Pro for accounts that are still on the earlier Pro rollout.
+- Added `gpt-5-pro` (aliases: `gpt-5`, `gpt-5.0-pro`) alongside GPT-5.1 Pro for accounts that are still on the earlier Pro rollout.
 - Duplicate prompt guard remains active: Oracle blocks a second run when the exact prompt is already running (we briefly removed this note during unreleased edits, but the behavior never left production).
 
 ### Changed
