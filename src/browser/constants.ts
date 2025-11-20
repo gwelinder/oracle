@@ -42,3 +42,6 @@ export const STOP_BUTTON_SELECTOR = '[data-testid="stop-button"]';
 export const SEND_BUTTON_SELECTOR = '[data-testid="send-button"]';
 export const MODEL_BUTTON_SELECTOR = '[data-testid="model-switcher-dropdown-button"]';
 export const COPY_BUTTON_SELECTOR = 'button[data-testid="copy-turn-action-button"]';
+// Action buttons that only appear once a turn has finished rendering.
+export const FINISHED_ACTIONS_SELECTOR =
+  'button[data-testid="copy-turn-action-button"], button[data-testid="good-response-turn-action-button"], button[data-testid="bad-response-turn-action-button"], button[aria-label="Share"]';

@@ -156,6 +156,7 @@ describe('waitForAssistantResponse', () => {
     } as unknown as ChromeClient['Runtime'];
     await expect(waitForAssistantResponse(runtime, 100, logger)).rejects.toThrow('stop');
     expect(capturedExpression).toContain('characterData: true');
+    expect(capturedExpression).toContain('copy-turn-action-button');
   });
 
   test('falls back to snapshot when observer fails', async () => {
