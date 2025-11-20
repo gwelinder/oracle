@@ -23,6 +23,7 @@ All notable changes to this project will be documented in this file.
 - Gemini client now uses Google’s `@google/genai` SDK (replacing the deprecated `@google/generative-ai`) while preserving streaming final responses and token accounting.
 - Session slugs now trim individual words to 10 characters to keep auto-generated IDs readable when prompts include very long tokens.
 - CLI: `--mode` is now a silent alias for `--engine` for backward compatibility with older docs/scripts; prefer `--engine`.
+- CLI guardrail: if a session with the same prompt is already running, new runs abort with guidance to reattach unless `--force` is provided (prevents unintended duplicate API/browser runs).
 
 ## 1.3.0 — 2025-11-19
 

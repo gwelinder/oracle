@@ -59,6 +59,7 @@ interface CliOptions extends OptionValues {
   include?: string[];
   model: string;
   models?: string[];
+  force?: boolean;
   slug?: string;
   filesReport?: boolean;
   maxInput?: number;
@@ -348,6 +349,7 @@ program
     'Prune stored sessions older than this many hours before running (set 0 to disable).',
     parseFloatOption,
   )
+  .option('--force', 'Force start a new session even if an identical prompt is already running.', false)
   .option('--debug-help', 'Show the advanced/debug option set and exit.', false)
   .option('--heartbeat <seconds>', 'Emit periodic in-progress updates (0 to disable).', parseHeartbeatOption, 30)
   .addOption(new Option('--wait').default(undefined))
@@ -803,6 +805,23 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     options.prompt = `${options.prompt.trim()}\n${userConfig.promptSuffix}`;
   }
   resolvedOptions.prompt = options.prompt;
+
+  const normalizedIncomingPrompt = resolvedOptions.prompt?.trim() ?? '';
+  if (!options.force && normalizedIncomingPrompt.length > 0) {
+    const running = (await sessionStore.listSessions()).filter((entry) => entry.status === 'running');
+    const duplicate = running.find(
+      (entry) => (entry.options?.prompt?.trim?.() ?? '') === normalizedIncomingPrompt,
+    );
+    if (duplicate) {
+      console.log(
+        chalk.yellow(
+          `A session with the same prompt is already running (${duplicate.id}). Reattach with "oracle session ${duplicate.id}" or rerun with --force to start another run.`,
+        ),
+      );
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   if (options.file && options.file.length > 0) {
     await readFiles(options.file, { cwd: process.cwd() });
