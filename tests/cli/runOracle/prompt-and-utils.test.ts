@@ -16,8 +16,8 @@ import {
   formatElapsed,
   getFileTokenStats,
   printFileTokenStats,
-} from '../../../src/oracle.ts';
-import { collectPaths, parseIntOption } from '../../../src/cli/options.ts';
+} from '@src/oracle.ts';
+import { collectPaths, parseIntOption } from '@src/cli/options.ts';
 import { createTempFile } from './helpers.ts';
 
 const testNonWindows = process.platform === 'win32' ? test.skip : test;

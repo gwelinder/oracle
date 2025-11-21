@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { runOracle } from '../../../src/oracle.ts';
+import { runOracle } from '@src/oracle.ts';
 import { createMockFs, MockBackgroundClient, MockClient, MockStream, buildResponse } from './helpers.ts';
 
 const testNonWindows = process.platform === 'win32' ? test.skip : test;

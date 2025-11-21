@@ -1,4 +1,6 @@
 import { defineConfig } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 export default defineConfig({
   test: {
@@ -25,6 +27,12 @@ export default defineConfig({
         'src/oracle/types.ts',
         'src/types/**',
       ],
+    },
+  },
+  resolve: {
+    alias: {
+      '@src': fileURLToPath(new URL('./src', import.meta.url)),
+      '@tests': fileURLToPath(new URL('./tests', import.meta.url)),
     },
   },
 });
