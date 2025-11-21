@@ -4,9 +4,13 @@ import { existsSync, promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sqlite3 from 'sqlite3';
-// @ts-expect-error no published types
-import dpapi from 'win-dpapi';
+import { createRequire } from 'node:module';
 import type { CookieParam } from './types.js';
+
+// win-dpapi is CommonJS; require it explicitly
+const { unprotectData } = createRequire(import.meta.url)('win-dpapi') as {
+  unprotectData: (data: Buffer, entropy?: any, scope?: 'CurrentUser' | 'LocalMachine') => Buffer;
+};
 
 type RawCookieRow = {
   name: string;
@@ -51,7 +55,7 @@ function decryptCookie(value: Buffer, aesKey: Buffer): string {
     const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
     return decrypted.toString('utf8');
   }
-  const unprotected: Buffer = dpapi.unprotectData(value, null, 'CurrentUser');
+  const unprotected: Buffer = unprotectData(value, null, 'CurrentUser');
   return Buffer.from(unprotected).toString('utf8');
 }
 
@@ -71,7 +75,7 @@ async function extractWindowsAesKey(localStatePath: string): Promise<Buffer> {
   if (!encKeyB64) throw new Error('encrypted_key missing in Local State');
   const encKey = Buffer.from(encKeyB64, 'base64');
   const dpapiBlob = encKey.slice(5); // strip "DPAPI"
-  const unprotected: Buffer = dpapi.unprotectData(dpapiBlob, null, 'CurrentUser');
+  const unprotected: Buffer = unprotectData(dpapiBlob, null, 'CurrentUser');
   return Buffer.from(unprotected);
 }
 
