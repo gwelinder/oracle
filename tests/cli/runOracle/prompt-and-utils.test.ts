@@ -100,6 +100,14 @@ describe('oracle utility helpers', () => {
     expect(() => parseIntOption('not-a-number')).toThrow('Value must be an integer.');
   });
 
+  test('formatElapsed chooses human-friendly units', () => {
+    expect(formatElapsed(150)).toBe('150ms');
+    expect(formatElapsed(44_000)).toBe('44s');
+    expect(formatElapsed(2 * 60 * 1000 + 21 * 1000)).toBe('2m 21s');
+    expect(formatElapsed(44 * 60 * 1000 + 3 * 1000)).toBe('44m 3s');
+    expect(formatElapsed(81 * 60 * 60 * 1000 + 23 * 60 * 1000)).toBe('81h 23m');
+  });
+
   testNonWindows('readFiles deduplicates and expands directories', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'oracle-readfiles-'));
     try {
@@ -363,7 +371,7 @@ describe('oracle utility helpers', () => {
     expect(formatNumber(4200, { estimated: true })).toBe('4,200 (est.)');
     expect(formatNumber(null)).toBe('n/a');
 
-    expect(formatElapsed(12345)).toBe('12.35s');
+    expect(formatElapsed(12345)).toBe('12s');
     expect(formatElapsed(125000)).toBe('2m 5s');
   });
 

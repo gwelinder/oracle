@@ -18,16 +18,18 @@ export function formatNumber(
 }
 
 export function formatElapsed(ms: number): string {
-  const totalSeconds = ms / 1000;
-  if (totalSeconds < 60) {
-    return `${totalSeconds.toFixed(2)}s`;
+  if (ms >= 60 * 60 * 1000) {
+    const hours = Math.floor(ms / (60 * 60 * 1000));
+    const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+    return `${hours}h ${minutes}m`;
   }
-  const minutes = Math.floor(totalSeconds / 60);
-  let seconds = Math.round(totalSeconds - minutes * 60);
-  let adjustedMinutes = minutes;
-  if (seconds === 60) {
-    adjustedMinutes += 1;
-    seconds = 0;
+  if (ms >= 60 * 1000) {
+    const minutes = Math.floor(ms / (60 * 1000));
+    const seconds = Math.floor((ms % (60 * 1000)) / 1000);
+    return `${minutes}m ${seconds}s`;
   }
-  return `${adjustedMinutes}m ${seconds}s`;
+  if (ms >= 1000) {
+    return `${Math.floor(ms / 1000)}s`;
+  }
+  return `${Math.round(ms)}ms`;
 }
