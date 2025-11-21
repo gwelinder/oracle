@@ -26,6 +26,8 @@ describe('oracle CLI integration', () => {
       ORACLE_CLIENT_FACTORY: CLIENT_FACTORY,
       // biome-ignore lint/style/useNamingConvention: env var name
       ORACLE_NO_DETACH: '1',
+      // biome-ignore lint/style/useNamingConvention: env var name
+      ORACLE_DISABLE_KEYTAR: '1',
     };
 
     await execFileAsync(
@@ -66,6 +68,8 @@ describe('oracle CLI integration', () => {
       ORACLE_HOME_DIR: oracleHome,
       // biome-ignore lint/style/useNamingConvention: env var name
       ORACLE_CLIENT_FACTORY: CLIENT_FACTORY,
+      // biome-ignore lint/style/useNamingConvention: env var name
+      ORACLE_DISABLE_KEYTAR: '1',
     };
 
     await expect(
@@ -91,6 +95,8 @@ describe('oracle CLI integration', () => {
       ORACLE_CLIENT_FACTORY: CLIENT_FACTORY,
       // biome-ignore lint/style/useNamingConvention: environment variable name
       ORACLE_NO_DETACH: '1',
+      // biome-ignore lint/style/useNamingConvention: env var name
+      ORACLE_DISABLE_KEYTAR: '1',
     };
 
     await execFileAsync(
@@ -121,6 +127,8 @@ describe('oracle CLI integration', () => {
       ORACLE_HOME_DIR: oracleHome,
       // biome-ignore lint/style/useNamingConvention: environment variable name
       ORACLE_CLIENT_FACTORY: CLIENT_FACTORY,
+      // biome-ignore lint/style/useNamingConvention: env var name
+      ORACLE_DISABLE_KEYTAR: '1',
     };
 
     await expect(

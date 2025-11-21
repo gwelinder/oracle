@@ -12,7 +12,7 @@ describe('oracle --version', () => {
     const tsxCli = path.join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
     const { stdout } = await execFileAsync(process.execPath, [tsxCli, cliEntrypoint, '--version'], {
       // biome-ignore lint/style/useNamingConvention: environment variable name
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, FORCE_COLOR: '0', ORACLE_DISABLE_KEYTAR: '1' },
     });
     expect(stdout.trim()).toBe(getCliVersion());
   }, 15000);
