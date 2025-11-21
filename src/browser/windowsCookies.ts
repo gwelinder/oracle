@@ -177,7 +177,7 @@ try {
 }
 
 // Create a directory containing a file named "Cookies" for chrome-cookies-secure fallback
-async function ensureCookiesDirForFallback(cookieFile: string): Promise<string> {
+export async function ensureCookiesDirForFallback(cookieFile: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-cookies-secure-'));
   const target = path.join(dir, 'Cookies');
   await fs.copyFile(cookieFile, target);
