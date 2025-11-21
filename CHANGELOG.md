@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.1 — Unreleased
+
+### Fixed
+- MCP: stdout is now muted during MCP runs, preventing non-JSON logs from breaking hosts like Cursor.
+
 ## 0.4.0 — 2025-11-21
 
 ### Added
@@ -139,20 +144,20 @@ Details
 - Added a local Markdansi type shim for now; switch to official types once the npm package ships them.
 - Markdansi renderer now enables color/hyperlinks when TTY by default and auto-renders sessions unless the user explicitly disables it.
 
-## 1.0.8 — 2025-11-16
+## 0.0.8 — 2025-11-16
 
 ### Changed
 - Help tips call out that Oracle is one-shot and does not remember prior runs, so every query should include full context.
 - `oracle session <id>` now logs a brief notice when extra root-only flags are present (e.g., `--render-markdown`) to make it clear those options are ignored during reattach.
 
-## 1.0.7 — 2025-11-16
+## 0.0.7 — 2025-11-16
 
 ### Changed
 - Browser-mode thinking monitor now emits a text-only progress bar instead of the "Pro thinking" string.
 - `oracle session <id>` trims preamble/log noise and prints from the first `Answer:` line once a session is finished.
 - Help tips now stress sending whole directories and richer project briefings for better answers.
 
-## 1.0.6 — 2025-11-15
+## 0.0.6 — 2025-11-15
 
 ### Changed
 - Colorized live run header (model/tokens/files) when a rich TTY is available.
@@ -163,17 +168,15 @@ Details
 ### Browser mode
 - When more than 10 files are provided, automatically bundles all files into a single `attachments-bundle.txt` to stay under ChatGPT’s upload cap and logs a verbose warning when bundling occurs.
 
-## 1.0.5 — 2025-11-15
+## 0.0.5 — 2025-11-15
 
 ### Added
 - Logs the masked OpenAI key in use (`Using OPENAI_API_KEY=xxxx****yyyy`) so runs are traceable without leaking secrets.
 - Logs a helpful tip when you run without attachments, reminding you to pass context via `--file`.
 
-## 1.0.3 — 2025-11-15
+## 0.0.3 — 2025-11-15
 
-## 1.0.2 — 2025-11-15
-
-## 1.0.2 — 2025-11-15
+## 0.0.2 — 2025-11-15
 
 ### Added
 - Positional prompt shorthand: `oracle "prompt here"` (and `npx -y @steipete/oracle "..."`) now maps the positional argument to `--prompt` automatically.
@@ -181,12 +184,12 @@ Details
 ### Fixed
 - `oracle status/session` missing-prompt guard now coexists with the positional prompt path and still shows the cleanup tip when no sessions exist.
 
-## 1.0.1 — 2025-11-15
+## 0.0.1 — 2025-11-15
 
 ### Fixed
 - Corrected npm binary mapping so `oracle` is installed as an executable. Published with `--tag beta`.
 
-## 1.0.0 — 2025-11-15
+## 0.0.0 — 2025-11-15
 
 ### Added
 - Dual-engine support (API and browser) with automatic selection: defaults to API when `OPENAI_API_KEY` is set, otherwise falls back to browser mode.
