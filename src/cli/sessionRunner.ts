@@ -1,4 +1,6 @@
 import kleur from 'kleur';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { SessionMetadata, SessionMode, BrowserSessionConfig } from '../sessionStore.js';
 import type { RunOracleOptions, UsageSummary } from '../oracle.js';
 import {
@@ -26,6 +28,8 @@ import { estimateRequestTokens } from '../oracle/tokenEstimate.js';
 import { formatTokenEstimate, formatTokenValue } from '../oracle/runUtils.js';
 import { readFiles } from '../oracle/files.js';
 import { formatUSD } from '../oracle/format.js';
+import { SESSIONS_DIR } from '../sessionManager.js';
+import { cwd as getCwd } from 'node:process';
 
 const isTty = process.stdout.isTTY;
 const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
@@ -103,6 +107,7 @@ export async function performSessionRun({
         transport: undefined,
         error: undefined,
       });
+      await writeAssistantOutput(runOptions.writeOutputPath, result.answerText ?? '', log);
       await sendSessionNotification(
         {
           sessionId: sessionMeta.id,
@@ -161,11 +166,24 @@ export async function performSessionRun({
       const shouldRenderMarkdown = shouldStreamInline && runOptions.renderPlain !== true;
       const printedModels = new Set<string>();
       const answerFallbacks = new Map<string, string>();
+      const stripOscProgress = (text: string): string => {
+        const oscStart = '\u001b]9;4;';
+        const oscEnd = '\u001b\\';
+        let current = text;
+        // Remove any OSC 9;4 progress sequences that may linger in stored logs.
+        while (current.includes(oscStart)) {
+          const start = current.indexOf(oscStart);
+          const end = current.indexOf(oscEnd, start + oscStart.length);
+          const cutEnd = end === -1 ? start + oscStart.length : end + oscEnd.length;
+          current = `${current.slice(0, start)}${current.slice(cutEnd)}`;
+        }
+        return current;
+      };
 
       const printModelLog = async (model: string) => {
         if (printedModels.has(model)) return;
         printedModels.add(model);
-        const body = await sessionStore.readModelLog(sessionMeta.id, model);
+        const body = stripOscProgress(await sessionStore.readModelLog(sessionMeta.id, model));
         log('');
         const fallback = answerFallbacks.get(model);
         const hasBody = body.length > 0;
@@ -273,6 +291,22 @@ export async function performSessionRun({
         notificationSettings,
         log,
       );
+      if (runOptions.writeOutputPath) {
+        const savedOutputs: Array<{ model: string; path: string }> = [];
+        for (const entry of summary.fulfilled) {
+          const modelOutputPath = deriveModelOutputPath(runOptions.writeOutputPath, entry.model);
+          const savedPath = await writeAssistantOutput(modelOutputPath, entry.answerText, log);
+          if (savedPath) {
+            savedOutputs.push({ model: entry.model, path: savedPath });
+          }
+        }
+        if (savedOutputs.length > 0) {
+          log(dim('Saved outputs:'));
+          for (const item of savedOutputs) {
+            log(dim(`- ${item.model} -> ${item.path}`));
+          }
+        }
+      }
       if (hasFailure) {
         throw summary.rejected[0].reason;
       }
@@ -313,6 +347,7 @@ export async function performSessionRun({
       });
     }
     const answerText = extractTextOutput(result.response);
+    await writeAssistantOutput(runOptions.writeOutputPath, answerText, log);
     await sendSessionNotification(
       {
         sessionId: sessionMeta.id,
@@ -381,4 +416,79 @@ export async function performSessionRun({
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function writeAssistantOutput(targetPath: string | undefined, content: string, log: (message: string) => void) {
+  if (!targetPath) return;
+  if (!content || content.trim().length === 0) {
+    log(dim('write-output skipped: no assistant content to save.'));
+    return;
+  }
+  const normalizedTarget = path.resolve(targetPath);
+  const normalizedSessionsDir = path.resolve(SESSIONS_DIR);
+  if (
+    normalizedTarget === normalizedSessionsDir ||
+    normalizedTarget.startsWith(`${normalizedSessionsDir}${path.sep}`)
+  ) {
+    log(dim(`write-output skipped: refusing to write inside session storage (${normalizedSessionsDir}).`));
+    return;
+  }
+  try {
+    await fs.mkdir(path.dirname(normalizedTarget), { recursive: true });
+    const payload = content.endsWith('\n') ? content : `${content}\n`;
+    await fs.writeFile(normalizedTarget, payload, 'utf8');
+    log(dim(`Saved assistant output to ${normalizedTarget}`));
+    return normalizedTarget;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (isPermissionError(error)) {
+      const fallbackPath = buildFallbackPath(normalizedTarget);
+      if (fallbackPath) {
+        try {
+          await fs.mkdir(path.dirname(fallbackPath), { recursive: true });
+          const payload = content.endsWith('\n') ? content : `${content}\n`;
+          await fs.writeFile(fallbackPath, payload, 'utf8');
+          log(dim(`write-output fallback to ${fallbackPath} (original failed: ${reason})`));
+          return fallbackPath;
+        } catch (innerError) {
+          const innerReason = innerError instanceof Error ? innerError.message : String(innerError);
+          log(dim(`write-output failed (${reason}); fallback failed (${innerReason}); session completed anyway.`));
+          return;
+        }
+      }
+    }
+    log(dim(`write-output failed (${reason}); session completed anyway.`));
+  }
+}
+
+export function deriveModelOutputPath(basePath: string | undefined, model: string): string | undefined {
+  if (!basePath) return undefined;
+  const ext = path.extname(basePath);
+  const stem = path.basename(basePath, ext);
+  const dir = path.dirname(basePath);
+  const suffix = ext.length > 0 ? `${stem}.${model}${ext}` : `${stem}.${model}`;
+  return path.join(dir, suffix);
+}
+
+function isPermissionError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: string }).code;
+  return code === 'EACCES' || code === 'EPERM';
+}
+
+function buildFallbackPath(original: string): string | null {
+  const ext = path.extname(original);
+  const stem = path.basename(original, ext);
+  const dir = getCwd();
+  const candidate = ext ? `${stem}.fallback${ext}` : `${stem}.fallback`;
+  const fallback = path.join(dir, candidate);
+  const normalizedSessionsDir = path.resolve(SESSIONS_DIR);
+  const normalizedFallback = path.resolve(fallback);
+  if (
+    normalizedFallback === normalizedSessionsDir ||
+    normalizedFallback.startsWith(`${normalizedSessionsDir}${path.sep}`)
+  ) {
+    return null;
+  }
+  return fallback;
 }

@@ -59,6 +59,7 @@ import type { OracleResponse, RunOracleResult } from '../../src/oracle.ts';
 import { runBrowserSessionExecution } from '../../src/browser/sessionRunner.ts';
 import { sendSessionNotification } from '../../src/cli/notifier.ts';
 import { getCliVersion } from '../../src/version.ts';
+import { deriveModelOutputPath } from '../../src/cli/sessionRunner.ts';
 
 const baseSessionMeta: SessionMetadata = {
   id: 'sess-1',
@@ -192,7 +193,7 @@ describe('performSessionRun', () => {
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true as unknown as boolean);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const originalTty = (process.stdout as { isTTY?: boolean }).isTTY;
-    (process.stdout as { isTTY?: boolean }).isTTY = true;
+    (process.stdout as { isTTY?: boolean }).isTTY = false;
 
     vi.mocked(runMultiModelApiSession).mockImplementation(async (params) => {
       const fulfilled: ModelExecutionResult[] = [
@@ -252,6 +253,76 @@ describe('performSessionRun', () => {
     }
   });
 
+  test('strips OSC progress codes from stored model logs', async () => {
+    const sessionMeta = {
+      ...baseSessionMeta,
+      models: [
+        { model: 'gpt-5.1', status: 'running' } as SessionModelRun,
+        { model: 'gemini-3-pro', status: 'running' } as SessionModelRun,
+      ],
+    } as SessionMetadata;
+
+    sessionStoreMock.readSession.mockResolvedValue(sessionMeta);
+    sessionStoreMock.readModelLog.mockResolvedValue('\u001b]9;4;3;;Waiting for API\u001b\\Please provide design');
+
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true as unknown as boolean);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const originalTty = (process.stdout as { isTTY?: boolean }).isTTY;
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+
+    const summary: MultiModelRunSummary = {
+      fulfilled: [
+        {
+          model: 'gpt-5.1' as ModelName,
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2, cost: 0 },
+          answerText: 'other',
+          logPath: 'log-gpt',
+        },
+        {
+          model: 'gemini-3-pro' as ModelName,
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2, cost: 0 },
+          answerText: 'fallback text',
+          logPath: 'log-gem',
+        },
+      ],
+      rejected: [],
+      elapsedMs: 123,
+    };
+
+    vi.mocked(runMultiModelApiSession).mockImplementation(async (params) => {
+      if (params.onModelDone) {
+        for (const entry of summary.fulfilled) {
+          await params.onModelDone(entry);
+        }
+      }
+      return summary;
+    });
+
+    await performSessionRun({
+      sessionMeta,
+      runOptions: { ...baseRunOptions, models: ['gpt-5.1', 'gemini-3-pro'] },
+      mode: 'api',
+      cwd: '/tmp',
+      log: logSpy,
+      write: writeSpy,
+      version: cliVersion,
+    });
+
+    const combined =
+      writeSpy.mock.calls.map((c) => c[0]).join('') + logSpy.mock.calls.map((c) => c[0]).join('');
+    expect(combined).toContain('Please provide design');
+    expect(combined).not.toContain(']9;4;');
+
+    writeSpy.mockRestore();
+    logSpy.mockRestore();
+    if (originalTty === undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete (process.stdout as { isTTY?: boolean }).isTTY;
+    } else {
+      (process.stdout as { isTTY?: boolean }).isTTY = originalTty;
+    }
+  });
+
   test('writes per-model outputs during multi-model runs when writeOutputPath provided', async () => {
     const summary: MultiModelRunSummary = {
       fulfilled: [
@@ -292,6 +363,9 @@ describe('performSessionRun', () => {
     const writeCalls = (fsPromises.writeFile as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     expect(writeCalls).toContainEqual(['/tmp/out.gpt-5.1-pro.md', expect.stringContaining('pro answer\n'), 'utf8']);
     expect(writeCalls).toContainEqual(['/tmp/out.gemini-3-pro.md', expect.stringContaining('gemini answer\n'), 'utf8']);
+    const logLines = log.mock.calls.map((c) => c[0]).join('\n');
+    expect(logLines).toContain('Saved outputs:');
+    expect(logLines).toContain('gpt-5.1-pro -> /tmp/out.gpt-5.1-pro.md');
   });
 
   test('prints one aggregate header and colored summary for multi-model runs', async () => {
@@ -624,7 +698,12 @@ describe('performSessionRun', () => {
       },
     };
     vi.mocked(runOracle).mockResolvedValue(liveResult);
-    vi.mocked(fsPromises.writeFile).mockRejectedValueOnce(new Error('EACCES'));
+    const eacces = new Error('EACCES');
+    // @ts-expect-error simulate code
+    eacces.code = 'EACCES';
+    vi.mocked(fsPromises.writeFile)
+      .mockRejectedValueOnce(eacces as never)
+      .mockResolvedValueOnce(undefined as unknown as Awaited<ReturnType<typeof fsPromises.writeFile>>);
 
     await expect(
       performSessionRun({
@@ -641,7 +720,10 @@ describe('performSessionRun', () => {
     const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
     expect(finalUpdate).toMatchObject({ status: 'completed' });
     const logLines = log.mock.calls.map((c) => c[0]).join('\n');
-    expect(logLines).toContain('write-output failed');
+    expect(logLines).toContain('write-output fallback');
+    const calls = (fsPromises.writeFile as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(calls[0][0]).toBe('/tmp/out.md');
+    expect(calls[1][0]).toMatch(/out\.fallback/);
   });
 
   test('refuses to write inside session storage path', async () => {
@@ -671,6 +753,11 @@ describe('performSessionRun', () => {
     expect(fsPromises.writeFile).not.toHaveBeenCalled();
     const logLines = log.mock.calls.map((c) => c[0]).join('\n');
     expect(logLines).toContain('refusing to write inside session storage');
+  });
+
+  test('deriveModelOutputPath appends model when base has no extension', () => {
+    const result = deriveModelOutputPath('/tmp/out', 'gpt-5.1-pro');
+    expect(result).toBe('/tmp/out.gpt-5.1-pro');
   });
 
   test('records metadata when browser automation fails', async () => {
