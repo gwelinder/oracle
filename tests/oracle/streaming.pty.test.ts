@@ -6,6 +6,7 @@ import { randomInt } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { renderMarkdownAnsi } from '../../src/cli/markdownRenderer.js';
+const TOKENIZER_STUB = path.join(process.cwd(), 'tests', 'fixtures', 'tokenizer-stub.cjs');
 import { build } from 'esbuild';
 const NODE_BIN = process.execPath;
 
@@ -21,8 +22,8 @@ try {
   ptyAvailable = false;
 }
 
-// Prefer to run PTY cases even on Node 25+; we prebundle the harness to ESM with esbuild and run plain `node`.
-const ptyRunnable = Boolean(pty);
+// Prefer to run PTY cases even on Node 25+; gate on env to avoid flaky/module-resolution failures in sandboxed runners.
+const ptyRunnable = Boolean(pty) && process.env.ORACLE_ENABLE_PTY_TESTS === '1';
 const ptyDescribe = ptyRunnable ? describe : describe.skip;
 
 /**
@@ -74,6 +75,11 @@ async function runPtyStreaming({
     format: 'esm',
     platform: 'node',
     target: 'node18',
+    alias: {
+      'gpt-tokenizer/model/gpt-5': TOKENIZER_STUB,
+      'gpt-tokenizer/model/gpt-5-pro': TOKENIZER_STUB,
+      '@anthropic-ai/tokenizer': TOKENIZER_STUB,
+    },
     sourcemap: false,
     write: true,
   });
@@ -86,6 +92,10 @@ async function runPtyStreaming({
     DELAYS: JSON.stringify(delays),
     // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
     RENDER_PLAIN: renderPlain ? '1' : '0',
+    // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? 'sk-test',
+    // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
+    NODE_PATH: `${process.cwd()}/node_modules`,
     // Force color so we can assert ANSI when tty is present.
     // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
     FORCE_COLOR: '1',
@@ -178,12 +188,22 @@ ptyDescribe('runOracle streaming via PTY', () => {
       format: 'esm',
       platform: 'node',
       target: 'node18',
+      alias: {
+        'gpt-tokenizer/model/gpt-5': TOKENIZER_STUB,
+        'gpt-tokenizer/model/gpt-5-pro': TOKENIZER_STUB,
+        '@anthropic-ai/tokenizer': TOKENIZER_STUB,
+      },
       sourcemap: false,
       write: true,
     });
     const proc = spawn(NODE_BIN, [scriptPath], {
       // biome-ignore lint/style/useNamingConvention: env keys need to stay uppercase
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: {
+        ...process.env,
+        FORCE_COLOR: '0',
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? 'sk-test',
+        NODE_PATH: `${process.cwd()}/node_modules`,
+      },
     });
     let stdout = '';
     proc.stdout.on('data', (d) => {

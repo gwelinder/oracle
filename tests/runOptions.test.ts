@@ -91,32 +91,34 @@ describe('resolveRunOptionsFromConfig', () => {
   });
 
   it('forces api engine for gemini when engine is auto-detected', () => {
-    const { runOptions, resolvedEngine } = resolveRunOptionsFromConfig({
+    const { runOptions, resolvedEngine, engineCoercedToApi } = resolveRunOptionsFromConfig({
       prompt: basePrompt,
       model: 'gemini-3-pro',
       env: {}, // no OPENAI_API_KEY, would normally choose browser
     });
     expect(resolvedEngine).toBe('api');
+    expect(engineCoercedToApi).toBe(true);
     expect(runOptions.model).toBe('gemini-3-pro');
   });
 
-  it('coerces browser engine to api for gemini', () => {
-    const { resolvedEngine } = resolveRunOptionsFromConfig({
-      prompt: basePrompt,
-      model: 'gemini-3-pro',
-      engine: 'browser',
-    });
-    expect(resolvedEngine).toBe('api');
+  it('rejects browser engine explicitly set for gemini', () => {
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        model: 'gemini-3-pro',
+        engine: 'browser',
+      }),
+    ).toThrow(/Browser engine only supports GPT-series/);
   });
 
-  it('ignores config browser engine and forces api when model is gemini', () => {
-    const { resolvedEngine, runOptions } = resolveRunOptionsFromConfig({
-      prompt: basePrompt,
-      model: 'gemini-3-pro',
-      userConfig: { engine: 'browser' },
-    });
-    expect(resolvedEngine).toBe('api');
-    expect(runOptions.model).toBe('gemini-3-pro');
+  it('rejects browser engine in config when model is gemini', () => {
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        model: 'gemini-3-pro',
+        userConfig: { engine: 'browser' },
+      }),
+    ).toThrow(/Browser engine only supports GPT-series/);
   });
 
   it('forces api engine for gpt-5.1-codex when engine is auto-detected', () => {
@@ -158,13 +160,22 @@ describe('resolveRunOptionsFromConfig', () => {
     expect(runOptions.models).toEqual(['gpt-5.1', 'gemini-3-pro', 'claude-4.5-sonnet']);
   });
 
-  it('forces api engine for grok and defaults base url env', () => {
+  it('rejects browser engine for grok when explicitly set', () => {
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        model: 'grok',
+        engine: 'browser',
+      }),
+    ).toThrow(/Browser engine only supports GPT-series/);
+  });
+
+  it('forces api engine for grok when auto-selected browser and applies XAI base url', () => {
     // biome-ignore lint/style/useNamingConvention: env var is uppercase by convention
     const env: NodeJS.ProcessEnv = { XAI_BASE_URL: 'https://api.example/v1' } as NodeJS.ProcessEnv;
     const { runOptions, resolvedEngine, engineCoercedToApi } = resolveRunOptionsFromConfig({
       prompt: basePrompt,
       model: 'grok',
-      engine: 'browser',
       env,
     });
     expect(runOptions.model).toBe('grok-4.1');

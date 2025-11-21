@@ -725,6 +725,16 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const isCodex = primaryModelCandidate.startsWith('gpt-5.1-codex');
   const isClaude = primaryModelCandidate.startsWith('claude');
   const userForcedBrowser = options.browser || options.engine === 'browser';
+  const hasNonGptBrowserTarget =
+    (engine === 'browser' || userForcedBrowser) &&
+    (normalizedMultiModels.length > 0
+      ? normalizedMultiModels.some((model) => !model.startsWith('gpt-'))
+      : !resolvedModelCandidate.startsWith('gpt-'));
+  if (hasNonGptBrowserTarget) {
+    throw new Error(
+      'Browser engine only supports GPT-series ChatGPT models. Re-run with --engine api for Grok, Claude, Gemini, or other non-GPT models.'
+    );
+  }
   if (isGemini && userForcedBrowser) {
     throw new Error('Gemini is only supported via API. Use --engine api.');
   }

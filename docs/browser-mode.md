@@ -4,6 +4,29 @@
 
 `--preview` now works with `--engine browser`: it renders the composed prompt, lists which files would be uploaded vs inlined, and shows the bundle location when bundling is enabled, without launching Chrome.
 
+## Quick example: browser mode with custom cookies
+
+```bash
+# Minimal inline-cookies flow: keep ChatGPT logged in without Keychain
+jq '.' ~/.oracle/cookies.json  # file must contain CookieParam[]
+oracle --engine browser \
+  --browser-inline-cookies-file ~/.oracle/cookies.json \
+  --model "ChatGPT 5.1" \
+  -p "Run the UI smoke" \
+  --file "src/**/*.ts" --file "!src/**/*.test.ts"
+```
+
+`~/.oracle/cookies.json` should be a JSON array shaped like:
+
+```json
+[
+  { "name": "__Secure-next-auth.session-token", "value": "<token>", "domain": "chatgpt.com", "path": "/", "secure": true, "httpOnly": true },
+  { "name": "_account", "value": "personal", "domain": "chatgpt.com", "path": "/", "secure": true }
+]
+```
+
+You can pass the same payload inline (`--browser-inline-cookies '<json or base64>'`) or via env (`ORACLE_BROWSER_COOKIES_JSON`, `ORACLE_BROWSER_COOKIES_FILE`). Cloudflare cookies (`cf_clearance`, `__cf_bm`, etc.) are only needed when you hit a challenge.
+
 ## Current Pipeline
 
 1. **Prompt assembly** – we reuse the normal prompt builder (`buildPrompt`) and the markdown renderer. Browser mode pastes the system + user text (no special markers) into the ChatGPT composer and then uploads each resolved `--file` individually (via the hidden `<input type="file">`) before submitting the prompt.
@@ -120,11 +143,12 @@ Prefer to keep Chrome entirely on the remote Mac (no DevTools tunneling, no manu
      --remote-token c4e5f9... \
    --prompt "Summarize the incident doc" \
     --file docs/incidents/latest.md
-  ```
-  - `--remote-host` points the CLI at the VM.
-  - `--remote-token` matches the token printed by `oracle serve` (set `ORACLE_REMOTE_TOKEN` to avoid repeating it).
-  - You can also set defaults in `~/.oracle/config.json` (`remote.host`, `remote.token`) so you don’t need the flags; env vars still override those when present.
-  - Cookies are **not** transferred from your laptop. The service requires the host Chrome profile to be signed in; if not, it opens chatgpt.com and exits so you can log in, then restart `oracle serve`.
+   ```
+
+   - `--remote-host` points the CLI at the VM.
+   - `--remote-token` matches the token printed by `oracle serve` (set `ORACLE_REMOTE_TOKEN` to avoid repeating it).
+   - You can also set defaults in `~/.oracle/config.json` (`remote.host`, `remote.token`) so you don’t need the flags; env vars still override those when present.
+   - Cookies are **not** transferred from your laptop. The service requires the host Chrome profile to be signed in; if not, it opens chatgpt.com and exits so you can log in, then restart `oracle serve`.
 
 3. **What happens**
    - The CLI assembles the composed prompt + file bundle locally, sends them to the VM, and streams log lines/answer text back through the same HTTP connection.

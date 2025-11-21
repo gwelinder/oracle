@@ -1,0 +1,101 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+// Minimal PTY helper shared across interactive tests (TUI + streaming).
+// Third-party modules ship without types; keep the surface tiny and typed as any.
+// biome-ignore lint/suspicious/noExplicitAny: PTY modules do not provide types
+let pty: any | null = null;
+try {
+  // Prefer the new package, fall back to the legacy one.
+  // biome-ignore lint/suspicious/noExplicitAny: PTY modules do not provide types
+  const mod: any = await import('@cdktf/node-pty-prebuilt-multiarch').catch(() =>
+    import('@homebridge/node-pty-prebuilt-multiarch'),
+  );
+  pty = mod.default ?? mod;
+} catch {
+  pty = null;
+}
+
+export const ptyAvailable = Boolean(pty);
+
+export type PtyStep = {
+  /** Substring or regex that must appear in the accumulated output to trigger this step. */
+  match: string | RegExp;
+  /** Text to write to the PTY once the match is seen (e.g., key sequences). */
+  write?: string;
+};
+
+export interface RunPtyResult {
+  output: string;
+  exitCode: number | null;
+  signal: number | null;
+  homeDir: string;
+}
+
+/**
+ * Spawn the compiled oracle CLI under a pseudo-TTY and drive it with scripted steps.
+ * The caller is responsible for cleaning up the returned homeDir.
+ */
+export async function runOracleTuiWithPty({
+  steps,
+  env: envOverrides = {},
+  cols = 100,
+  rows = 40,
+  homeDir,
+}: {
+  steps: PtyStep[];
+  env?: Record<string, string | undefined>;
+  cols?: number;
+  rows?: number;
+  homeDir?: string;
+}): Promise<RunPtyResult> {
+  if (!pty) {
+    throw new Error('PTY module not available');
+  }
+
+  const home = homeDir ?? (await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-tui-')));
+  const entry = path.join(process.cwd(), 'dist/bin/oracle-cli.js');
+  const env = {
+    ...process.env,
+    ORACLE_FORCE_TUI: '1',
+    ORACLE_HOME_DIR: home,
+    FORCE_COLOR: '1',
+    CI: '',
+    ...envOverrides,
+  } satisfies Record<string, string | undefined>;
+
+  const ps = pty.spawn(process.execPath, [entry], {
+    name: 'xterm-color',
+    cols,
+    rows,
+    cwd: process.cwd(),
+    env,
+  });
+
+  let output = '';
+  const pending = [...steps];
+
+  ps.onData((data: string) => {
+    output += data;
+    while (pending.length > 0) {
+      const step = pending[0];
+      const ok = typeof step.match === 'string' ? output.includes(step.match) : step.match.test(output);
+      if (!ok) break;
+      if (step.write) {
+        try {
+          ps.write(step.write);
+        } catch {
+          // Ignore write errors if PTY closes between match and write.
+        }
+      }
+      pending.shift();
+    }
+  });
+
+  const exit = await new Promise<{ exitCode: number | null; signal: number | null }>((resolve) => {
+    ps.onExit((evt: { exitCode: number | null; signal: number | null }) => resolve(evt));
+  });
+
+  return { output, ...exit, homeDir: home };
+}

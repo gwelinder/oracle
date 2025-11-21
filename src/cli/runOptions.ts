@@ -5,6 +5,7 @@ import type { EngineMode } from './engine.js';
 import { resolveEngine } from './engine.js';
 import { normalizeModelOption, inferModelFromLabel, resolveApiModel, normalizeBaseUrl } from './options.js';
 import { resolveGeminiModelId } from '../oracle/gemini.js';
+import { PromptValidationError } from '../oracle/errors.js';
 
 export interface ResolveRunOptionsInput {
   prompt: string;
@@ -33,6 +34,7 @@ export function resolveRunOptionsFromConfig({
 }: ResolveRunOptionsInput): ResolvedRunOptions {
   const resolvedEngine = resolveEngineWithConfig({ engine, configEngine: userConfig?.engine, env });
   const browserRequested = engine === 'browser';
+  const browserConfigured = userConfig?.engine === 'browser';
   const requestedModelList = Array.isArray(models) ? models : [];
   const normalizedRequestedModels = requestedModelList.map((entry) => normalizeModelOption(entry)).filter(Boolean);
 
@@ -46,8 +48,21 @@ export function resolveRunOptionsFromConfig({
   const isClaude = resolvedModel.startsWith('claude');
   const isGrok = resolvedModel.startsWith('grok');
 
-  const engineCoercedToApi = (isGemini || isCodex || isClaude || isGrok) && browserRequested;
-  // When Gemini, Claude, or Codex is selected, always force API engine (overrides config/env auto browser).
+  const engineWasBrowser = resolvedEngine === 'browser';
+  const allModels: ModelName[] =
+    normalizedRequestedModels.length > 0
+      ? Array.from(new Set(normalizedRequestedModels.map((entry) => resolveApiModel(entry))))
+      : [resolvedModel];
+  const hasNonGptBrowserTarget = (browserRequested || browserConfigured) && allModels.some((m) => !m.startsWith('gpt-'));
+  if (hasNonGptBrowserTarget) {
+    throw new PromptValidationError(
+      'Browser engine only supports GPT-series ChatGPT models. Re-run with --engine api for Grok, Claude, Gemini, or other non-GPT models.',
+      { engine: 'browser', models: allModels },
+    );
+  }
+
+  const engineCoercedToApi = engineWasBrowser && (isGemini || isCodex || isClaude || isGrok);
+  // When Gemini, Claude, or Grok is selected, force API engine for auto-browser detection; codex also forces API.
   const fixedEngine: EngineMode =
     isGemini || isCodex || isClaude || isGrok || normalizedRequestedModels.length > 0 ? 'api' : resolvedEngine;
 
@@ -65,10 +80,7 @@ export function resolveRunOptionsFromConfig({
     userConfig?.apiBaseUrl ??
       (isClaude ? env.ANTHROPIC_BASE_URL : isGrok ? env.XAI_BASE_URL : env.OPENAI_BASE_URL),
   );
-  const uniqueMultiModels: ModelName[] =
-    normalizedRequestedModels.length > 0
-      ? Array.from(new Set(normalizedRequestedModels.map((entry) => resolveApiModel(entry))))
-      : [];
+  const uniqueMultiModels: ModelName[] = normalizedRequestedModels.length > 0 ? allModels : [];
   const includesCodexMultiModel = uniqueMultiModels.some((entry) => entry.startsWith('gpt-5.1-codex'));
   if (includesCodexMultiModel && browserRequested) {
     // Silent coerce; multi-model still forces API.

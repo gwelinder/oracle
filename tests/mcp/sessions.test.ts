@@ -1,14 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionMetadata, StoredRunOptions } from '../../src/sessionStore.js';
+import type { SessionMetadata, StoredRunOptions } from '../../src/sessionManager.js';
 
-const listSessions = vi.fn<[], Promise<SessionMetadata[]>>();
-const filterSessions = vi.fn<
-  [SessionMetadata[], { hours?: number; includeAll?: boolean; limit?: number }],
-  { entries: SessionMetadata[]; truncated: boolean; total: number }
->();
-const readSession = vi.fn<[string], Promise<SessionMetadata | null>>();
-const readLog = vi.fn<[string], Promise<string>>();
-const readRequest = vi.fn<[string], Promise<StoredRunOptions | null>>();
+const listSessions = vi.fn(async () => [] as SessionMetadata[]);
+const filterSessions = vi.fn(
+  (_metas: SessionMetadata[], _opts: { hours?: number; includeAll?: boolean; limit?: number }) => ({
+    entries: [] as SessionMetadata[],
+    truncated: false,
+    total: 0,
+  }),
+);
+const readSession = vi.fn(async (_id: string) => null as SessionMetadata | null);
+const readLog = vi.fn(async (_id: string) => '');
+const readRequest = vi.fn(async (_id: string) => null as StoredRunOptions | null);
 
 vi.mock('../../src/sessionStore.js', async () => {
   const original = await vi.importActual<typeof import('../../src/sessionStore.js')>('../../src/sessionStore.js');
@@ -38,7 +41,7 @@ describe('sessions MCP tool', () => {
     readRequest.mockReset();
     handler = null;
     registerSessionsTool({
-      registerTool: (_name, _def, fn) => {
+      registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
         handler = fn;
       },
     } as unknown as Parameters<typeof registerSessionsTool>[0]);
