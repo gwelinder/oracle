@@ -26,6 +26,7 @@ import { MODEL_CONFIGS, DEFAULT_SYSTEM_PROMPT } from '../oracle/config.js';
 import { buildPrompt, buildRequestBody } from '../oracle/request.js';
 import { estimateRequestTokens } from '../oracle/tokenEstimate.js';
 import { formatTokenEstimate, formatTokenValue } from '../oracle/runUtils.js';
+import { formatElapsed } from '../oracle/format.js';
 import { readFiles } from '../oracle/files.js';
 import { formatUSD } from '../oracle/format.js';
 import { SESSIONS_DIR } from '../sessionManager.js';
@@ -162,6 +163,18 @@ export async function performSessionRun({
         log(dim(tip));
       }
 
+      // Surface long-running model expectations up front so users know why a response might lag.
+      const longRunningModels = multiModels.filter((model) => MODEL_CONFIGS[model]?.reasoning?.effort === 'high');
+      if (longRunningModels.length > 0) {
+        for (const model of longRunningModels) {
+          log('');
+          const headingLabel = `[${model}]`;
+          log(isTty ? kleur.bold(headingLabel) : headingLabel);
+          log(dim('This model can take up to 60 minutes (usually replies much faster).'));
+          log(dim('Press Ctrl+C to cancel.'));
+        }
+      }
+
       const shouldStreamInline = process.stdout.isTTY;
       const shouldRenderMarkdown = shouldStreamInline && runOptions.renderPlain !== true;
       const printedModels = new Set<string>();
@@ -264,7 +277,7 @@ export async function performSessionRun({
       const overallText = `${summary.fulfilled.length}/${multiModels.length} models`;
       log(
         statusColor(
-          `Finished in ${summary.elapsedMs.toLocaleString()}ms (${overallText} | ${costLabel} | tok(i/o/r/t)=${tokensDisplay})`,
+          `Finished in ${formatElapsed(summary.elapsedMs)} (${overallText} | ${costLabel} | tok(i/o/r/t)=${tokensDisplay})`,
         ),
       );
 
