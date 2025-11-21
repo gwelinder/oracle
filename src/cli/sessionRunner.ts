@@ -8,7 +8,7 @@ import {
   extractResponseMetadata,
   asOracleUserError,
   extractTextOutput,
-  } from '../oracle.js';
+} from '../oracle.js';
 import { runBrowserSessionExecution, type BrowserSessionRunnerDeps } from '../browser/sessionRunner.js';
 import { renderMarkdownAnsi } from './markdownRenderer.js';
 import { formatResponseMetadata, formatTransportMetadata } from './sessionDisplay.js';
@@ -20,6 +20,12 @@ import {
 } from './notifier.js';
 import { sessionStore } from '../sessionStore.js';
 import { runMultiModelApiSession } from '../oracle/multiModelRunner.js';
+import { MODEL_CONFIGS } from '../oracle/config.js';
+import { buildPrompt, buildRequestBody } from '../oracle/request.js';
+import { estimateRequestTokens } from '../oracle/tokenEstimate.js';
+import { formatTokenEstimate, formatTokenValue } from '../oracle/runUtils.js';
+import { readFiles } from '../oracle/files.js';
+import { formatUSD } from '../oracle/format.js';
 
 const isTty = process.stdout.isTTY;
 const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
@@ -114,6 +120,28 @@ export async function performSessionRun({
     }
     const multiModels = Array.isArray(runOptions.models) ? runOptions.models.filter(Boolean) : [];
     if (multiModels.length > 1) {
+      const primaryModel = multiModels[0] ?? runOptions.model;
+      const modelConfig = primaryModel ? MODEL_CONFIGS[primaryModel] : undefined;
+      if (!modelConfig) {
+        throw new Error(`Unsupported model "${primaryModel}".`);
+      }
+      const files = await readFiles(runOptions.file ?? [], { cwd });
+      const promptWithFiles = buildPrompt(runOptions.prompt, files, cwd);
+      const requestBody = buildRequestBody({
+        modelConfig,
+        systemPrompt: runOptions.system,
+        userPrompt: promptWithFiles,
+        searchEnabled: runOptions.search !== false,
+        maxOutputTokens: runOptions.maxOutput,
+        background: runOptions.background,
+        storeResponse: runOptions.background,
+      });
+      const estimatedTokens = estimateRequestTokens(requestBody, modelConfig);
+      const tokenLabel = formatTokenEstimate(estimatedTokens, (text) => (isTty ? kleur.green(text) : text));
+      const filesPhrase = files.length === 0 ? 'no files' : `${files.length} files`;
+      const modelsLabel = multiModels.join(', ');
+      log(`Calling ${isTty ? kleur.cyan(modelsLabel) : modelsLabel} — ${tokenLabel} tokens, ${filesPhrase}.`);
+
       const shouldStreamInline = process.stdout.isTTY;
       const shouldRenderMarkdown = shouldStreamInline && runOptions.renderPlain !== true;
       const printedModels = new Set<string>();
@@ -173,6 +201,34 @@ export async function performSessionRun({
         }),
         { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, cost: 0 },
       );
+      const tokensDisplay = [
+        aggregateUsage.inputTokens,
+        aggregateUsage.outputTokens,
+        aggregateUsage.reasoningTokens,
+        aggregateUsage.totalTokens,
+      ]
+        .map((v, idx) =>
+          formatTokenValue(
+            v,
+            {
+              input_tokens: aggregateUsage.inputTokens,
+              output_tokens: aggregateUsage.outputTokens,
+              reasoning_tokens: aggregateUsage.reasoningTokens,
+              total_tokens: aggregateUsage.totalTokens,
+            },
+            idx,
+          ),
+        )
+        .join('/');
+      const costLabel = aggregateUsage.cost != null ? formatUSD(aggregateUsage.cost) : 'cost=N/A';
+      const statusColor = summary.rejected.length === 0 ? kleur.green : summary.fulfilled.length > 0 ? kleur.yellow : kleur.red;
+      const overallText = `${summary.fulfilled.length}/${multiModels.length} models`;
+      log(
+        statusColor(
+          `Finished in ${summary.elapsedMs.toLocaleString()}ms (${overallText} | ${costLabel} | tok(i/o/r/t)=${tokensDisplay})`,
+        ),
+      );
+
       const hasFailure = summary.rejected.length > 0;
       await sessionStore.updateSession(sessionMeta.id, {
         status: hasFailure ? 'error' : 'completed',
