@@ -19,26 +19,26 @@ Install globally: `npm install -g @steipete/oracle`
 
 ```bash
 # Copy the bundle and paste into ChatGPT
-npx -y @steipete/oracle --render --copy -p "Review the TS data layer for schema drift" --file "src/**/*.ts,*/*.test.ts"
+npx @steipete/oracle --render --copy -p "Review the TS data layer for schema drift" --file "src/**/*.ts,*/*.test.ts"
 
 # Minimal API run (expects OPENAI_API_KEY in your env)
-npx -y @steipete/oracle -p "Write a concise architecture note for the storage adapters" --file src/storage/README.md
+npx @steipete/oracle -p "Write a concise architecture note for the storage adapters" --file src/storage/README.md
 
 # Multi-model API run
-npx -y @steipete/oracle -p "Cross-check the data layer assumptions" --models gpt-5.1-pro,gemini-3-pro --file "src/**/*.ts"
+npx @steipete/oracle -p "Cross-check the data layer assumptions" --models gpt-5.1-pro,gemini-3-pro --file "src/**/*.ts"
 
 # Preview without spending tokens
-npx -y @steipete/oracle --dry-run summary -p "Check release notes" --file docs/release-notes.md
+npx @steipete/oracle --dry-run summary -p "Check release notes" --file docs/release-notes.md
 
 # Experimental browser run (no API key, will open ChatGPT)
-npx -y @steipete/oracle --engine browser -p "Walk through the UI smoke test" --file "src/**/*.ts"
+npx @steipete/oracle --engine browser -p "Walk through the UI smoke test" --file "src/**/*.ts"
 
 # Sessions (list and replay)
-npx -y @steipete/oracle status --hours 72
-npx -y @steipete/oracle session <id> --render
+npx @steipete/oracle status --hours 72
+npx @steipete/oracle session <id> --render
 
 # TUI (interactive, only for humans)
-npx -y @steipete/oracle
+npx @steipete/oracle
 ```
 
 Engine auto-picks API when `OPENAI_API_KEY` is set, otherwise browser; browser is stable on macOS, works on Linux with `--browser-chrome-path/--browser-cookie-path`, and is partial/experimental on Windows.
