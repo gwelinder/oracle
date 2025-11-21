@@ -41,7 +41,7 @@ oracle
 - Prefer API mode or `--copy` + manual paste; browser automation is experimental.
 - MCP server: `pnpm mcp` (or `oracle-mcp`) after building; see [docs/mcp.md](docs/mcp.md).
 - Remote browser service: `oracle serve` on a signed-in host; clients use `--remote-host/--remote-token`.
-- Agent notes:
+- AGENTS.md/CLAUDE.md:
   ```
   - Run `npx -y @steipete/oracle --help` once per session before first use.
   - Oracle bundles a prompt plus the right files so another AI (GPT 5 Pro + more) can answer. Use when stuck/bugs/reviewing.
