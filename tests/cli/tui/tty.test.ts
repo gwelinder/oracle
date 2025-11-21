@@ -1,6 +1,6 @@
+import fs from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { ptyAvailable, runOracleTuiWithPty } from '../../util/pty.js';
-import fs from 'node:fs/promises';
 
 const ptyDescribe = ptyAvailable ? describe : describe.skip;
 

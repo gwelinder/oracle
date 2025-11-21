@@ -197,11 +197,13 @@ ptyDescribe('runOracle streaming via PTY', () => {
       write: true,
     });
     const proc = spawn(NODE_BIN, [scriptPath], {
-      // biome-ignore lint/style/useNamingConvention: env keys need to stay uppercase
       env: {
         ...process.env,
+        // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
         FORCE_COLOR: '0',
+        // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
         OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? 'sk-test',
+        // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
         NODE_PATH: `${process.cwd()}/node_modules`,
       },
     });

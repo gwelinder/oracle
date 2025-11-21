@@ -148,3 +148,35 @@ describe('resolveCost basics', () => {
     expect(resolveCost(apiMeta)).toBeGreaterThan(0);
   });
 });
+
+describe('showSessionDetail', () => {
+  test('prints session header and combined log then returns on back', async () => {
+    const { showSessionDetail } = await import('../../../src/cli/tui/index.ts');
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    promptMock.mockResolvedValueOnce({ next: 'back' });
+
+    readSessionMock.mockResolvedValueOnce({
+      id: 'sess-123',
+      createdAt: '2025-11-21T00:00:00Z',
+      status: 'completed',
+      model: 'gpt-5.1',
+      options: { prompt: 'hi', model: 'gpt-5.1', mode: 'api' },
+    });
+    readLogMock.mockResolvedValueOnce('Answer: hello');
+    getPathsMock.mockResolvedValueOnce({
+      dir: '/tmp',
+      metadata: '/tmp/meta.json',
+      log: '/tmp/output.log',
+      request: '/tmp/request.json',
+    });
+
+    await showSessionDetail('sess-123');
+
+    expect(readSessionMock).toHaveBeenCalledWith('sess-123');
+    expect(readLogMock).toHaveBeenCalledWith('sess-123');
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Session'));
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Log file'));
+
+    consoleSpy.mockRestore();
+  });
+});

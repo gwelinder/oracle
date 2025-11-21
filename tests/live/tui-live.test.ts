@@ -24,7 +24,9 @@ liveDescribe('live TUI flow (API multi-model)', () => {
         ],
         homeDir,
         env: {
+          // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
           FORCE_COLOR: '0',
+          // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
           CI: '',
         },
       });
