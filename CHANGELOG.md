@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - Added the missing `@anthropic-ai/tokenizer` runtime dependency so `npx @steipete/oracle oracle-mcp` starts cleanly.
+- `npx @steipete/oracle oracle-mcp` now resolves to the MCP server even though npx runs the default binary, keeping stdout JSON-only for hosts like Cursor.
 
 ## 0.4.0 — 2025-11-21
 
