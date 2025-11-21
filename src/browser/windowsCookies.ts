@@ -58,8 +58,8 @@ export async function loadWindowsCookies(dbPath: string, filterNames?: Set<strin
     throw new Error('loadWindowsCookies is only supported on Windows');
   }
   const localStatePath = await locateLocalState(dbPath);
-  const cookiesCopy = await copyLockedFile(dbPath);
-  const localStateCopy = await copyLockedFile(localStatePath);
+  const cookiesCopy = await copyLockedFile(dbPath, 'Cookies');
+  const localStateCopy = await copyLockedFile(localStatePath, 'Local State');
   const aesKey = await extractWindowsAesKey(localStateCopy);
   const rows = await readChromeCookiesDb(cookiesCopy, filterNames);
   const cookies: CookieParam[] = [];
@@ -142,8 +142,9 @@ function openSqlite(dbPath: string): Promise<sqlite3.Database> {
   });
 }
 
-async function copyLockedFile(sourcePath: string): Promise<string> {
-  const tempPath = path.join(os.tmpdir(), `oracle-cookie-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`);
+async function copyLockedFile(sourcePath: string, targetName?: string): Promise<string> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-cookie-'));
+  const tempPath = targetName ? path.join(tempDir, targetName) : path.join(tempDir, path.basename(sourcePath));
   const psScript = `
 $src = '${sourcePath.replace(/'/g, "''")}'
 $dst = '${tempPath.replace(/'/g, "''")}'
