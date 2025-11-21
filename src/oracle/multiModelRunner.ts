@@ -19,6 +19,8 @@ export interface MultiModelRunParams {
   models: ModelName[];
   cwd: string;
   version: string;
+  /** Optional callback invoked as soon as an individual model finishes (before aggregate completion). */
+  onModelDone?: (result: ModelExecutionResult) => Promise<void> | void;
 }
 
 export interface ModelExecutionResult {
@@ -51,6 +53,7 @@ export async function runMultiModelApiSession(
   deps: MultiModelRunDependencies = defaultDeps,
 ): Promise<MultiModelRunSummary> {
   const { sessionMeta, runOptions, models, cwd } = params;
+  const { onModelDone } = params;
   const store = deps.store ?? sessionStore;
   const runOracleImpl = deps.runOracleImpl ?? runOracle;
   const now = deps.now ?? (() => Date.now());
@@ -66,7 +69,21 @@ export async function runMultiModelApiSession(
       runOracleImpl,
     }),
   );
-  const settled = await Promise.allSettled(executions.map((exec) => exec.promise));
+  const settled = await Promise.allSettled(
+    executions.map((exec) =>
+      exec.promise.then(
+        async (value) => {
+          if (onModelDone) {
+            await onModelDone(value);
+          }
+          return value;
+        },
+        (error) => {
+          throw error;
+        },
+      ),
+    ),
+  );
   const fulfilled: ModelExecutionResult[] = [];
   const rejected: Array<{ model: ModelName; reason: unknown }> = [];
   settled.forEach((result, index) => {

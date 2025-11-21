@@ -8,6 +8,10 @@ vi.mock('../../src/oracle.ts', async () => {
   };
 });
 
+vi.mock('../../src/oracle/multiModelRunner.ts', () => ({
+  runMultiModelApiSession: vi.fn(),
+}));
+
 vi.mock('../../src/browser/sessionRunner.ts', () => ({
   runBrowserSessionExecution: vi.fn(),
 }));
@@ -39,6 +43,7 @@ vi.mock('../../src/sessionStore.ts', () => ({
 import type { SessionMetadata } from '../../src/sessionManager.ts';
 import { performSessionRun } from '../../src/cli/sessionRunner.ts';
 import { BrowserAutomationError, FileValidationError, OracleResponseError, OracleTransportError, runOracle } from '../../src/oracle.ts';
+import { runMultiModelApiSession } from '../../src/oracle/multiModelRunner.ts';
 import type { OracleResponse, RunOracleResult } from '../../src/oracle.ts';
 import { runBrowserSessionExecution } from '../../src/browser/sessionRunner.ts';
 import { sendSessionNotification } from '../../src/cli/notifier.ts';
@@ -77,6 +82,8 @@ beforeEach(() => {
       fn.mockReset();
     }
   });
+  vi.mocked(runMultiModelApiSession).mockReset();
+  vi.mocked(runMultiModelApiSession).mockResolvedValue({ fulfilled: [], rejected: [], elapsedMs: 0 });
   sessionStoreMock.createLogWriter.mockReturnValue({
     logLine: vi.fn(),
     writeChunk: vi.fn(),
@@ -123,6 +130,80 @@ describe('performSessionRun', () => {
       expect.objectContaining({ status: 'completed' }),
     );
     expect(vi.mocked(sendSessionNotification)).toHaveBeenCalled();
+  });
+
+  test('streams per-model output as each model finishes when TTY', async () => {
+    const sessionMeta = {
+      ...baseSessionMeta,
+      models: [
+        { model: 'gpt-5.1', status: 'running' },
+        { model: 'gemini-3-pro', status: 'running' },
+      ],
+    } as SessionMetadata;
+
+    sessionStoreMock.readSession.mockResolvedValue(sessionMeta);
+    sessionStoreMock.readModelLog.mockImplementation(async (_sessionId: string, model: string) => `Answer:\nfrom ${model}`);
+
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true as unknown as boolean);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const originalTty = (process.stdout as { isTTY?: boolean }).isTTY;
+    (process.stdout as { isTTY?: boolean }).isTTY = true;
+
+    vi.mocked(runMultiModelApiSession).mockImplementation(async (params) => {
+      const fulfilled = [
+        {
+          model: 'gemini-3-pro',
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2, cost: 0 },
+          answerText: 'gemini answer',
+          logPath: 'log-gemini',
+        },
+        {
+          model: 'gpt-5.1',
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2, cost: 0 },
+          answerText: 'gpt answer',
+          logPath: 'log-gpt',
+        },
+      ];
+
+      if (params.onModelDone) {
+        await params.onModelDone(fulfilled[0]!);
+        await params.onModelDone(fulfilled[1]!);
+      }
+
+      return {
+        fulfilled,
+        rejected: [],
+        elapsedMs: 1000,
+      };
+    });
+
+    await performSessionRun({
+      sessionMeta,
+      runOptions: { ...baseRunOptions, models: ['gpt-5.1', 'gemini-3-pro'] },
+      mode: 'api',
+      cwd: '/tmp',
+      log: logSpy,
+      write: writeSpy,
+      version: cliVersion,
+    });
+
+    const written = writeSpy.mock.calls.map((c) => c[0]).join('');
+    expect(written).toContain('from gemini-3-pro');
+    expect(written).toContain('from gpt-5.1');
+    const geminiIndex = written.indexOf('from gemini-3-pro');
+    const gptIndex = written.indexOf('from gpt-5.1');
+    expect(geminiIndex).toBeGreaterThan(-1);
+    expect(gptIndex).toBeGreaterThan(-1);
+    expect(geminiIndex).toBeLessThan(gptIndex);
+
+    writeSpy.mockRestore();
+    logSpy.mockRestore();
+    if (originalTty === undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete (process.stdout as { isTTY?: boolean }).isTTY;
+    } else {
+      (process.stdout as { isTTY?: boolean }).isTTY = originalTty;
+    }
   });
 
   test('invokes browser runner when mode is browser', async () => {

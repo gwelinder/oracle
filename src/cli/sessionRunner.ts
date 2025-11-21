@@ -114,29 +114,53 @@ export async function performSessionRun({
     }
     const multiModels = Array.isArray(runOptions.models) ? runOptions.models.filter(Boolean) : [];
     if (multiModels.length > 1) {
-      const summary = await runMultiModelApiSession({
-        sessionMeta,
-        runOptions,
-        models: multiModels,
-        cwd,
-        version,
-      });
-      // Render stored per-model logs with ANSI markdown when in a TTY, unless caller explicitly requested plain output.
-      const shouldRenderMarkdown = process.stdout.isTTY && runOptions.renderPlain !== true;
-      for (const [index, result] of summary.fulfilled.entries()) {
-        const body = await sessionStore.readModelLog(sessionMeta.id, result.model);
-        // Separate consecutive model outputs without injecting another per-model header.
-        if (index > 0) {
+      const shouldStreamInline = process.stdout.isTTY;
+      const shouldRenderMarkdown = shouldStreamInline && runOptions.renderPlain !== true;
+      const printedModels = new Set<string>();
+
+      const printModelLog = async (model: string) => {
+        if (printedModels.has(model)) return;
+        printedModels.add(model);
+        const body = await sessionStore.readModelLog(sessionMeta.id, model);
+        if (printedModels.size > 1) {
           log('');
         }
         if (body.length === 0) {
-          log(dim(`${result.model}: (no output recorded)`));
-          continue;
+          log(dim(`${model}: (no output recorded)`));
+          return;
         }
+        const heading = shouldStreamInline ? kleur.bold(model) : model;
+        log(heading);
         const printable = shouldRenderMarkdown ? renderMarkdownAnsi(body) : body;
         write(printable);
         if (!printable.endsWith('\n')) {
           log('');
+        }
+      };
+
+      const summary = await runMultiModelApiSession(
+        {
+          sessionMeta,
+          runOptions,
+          models: multiModels,
+          cwd,
+          version,
+          onModelDone: shouldStreamInline
+            ? async (result) => {
+                await printModelLog(result.model);
+              }
+            : undefined,
+        },
+        undefined,
+      );
+
+      if (!shouldStreamInline) {
+        // If we couldn't stream inline (e.g., non-TTY), print all logs after completion.
+        for (const [index, result] of summary.fulfilled.entries()) {
+          if (index > 0) {
+            log('');
+          }
+          await printModelLog(result.model);
         }
       }
       const aggregateUsage = summary.fulfilled.reduce<UsageSummary>(

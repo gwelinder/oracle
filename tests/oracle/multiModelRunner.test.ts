@@ -116,4 +116,79 @@ describe('runMultiModelApiSession', () => {
     expect(statusUpdatesFor('gpt-5.1')).toContain('completed');
     expect(statusUpdatesFor('gemini-3-pro')).toContain('completed');
   });
+
+  test('invokes onModelDone callbacks in completion order', async () => {
+    vi.useFakeTimers();
+    const sessionMeta: SessionMetadata = {
+      id: 'sess-order',
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+      model: 'gpt-5.1-pro',
+      options: {},
+    };
+
+    const models: ModelName[] = ['gemini-3-pro', 'gpt-5.1'];
+    const order: string[] = [];
+
+    const store: SessionStore = {
+      ensureStorage: async () => {},
+      createSession: async () => sessionMeta,
+      readSession: async () => sessionMeta,
+      updateSession: async () => sessionMeta,
+      createLogWriter: (sessionId: string, model?: string) => {
+        const logPath = path.join(tmpRoot, sessionId, 'models', `${model ?? 'session'}.log`);
+        fs.mkdirSync(path.dirname(logPath), { recursive: true });
+        fs.writeFileSync(logPath, '');
+        return {
+          logPath,
+          stream: { end: vi.fn() } as unknown as fs.WriteStream,
+          logLine: (line = '') => fs.appendFileSync(logPath, `${line}\n`),
+          writeChunk: (chunk: string) => {
+            fs.appendFileSync(logPath, chunk);
+            return true;
+          },
+        };
+      },
+      updateModelRun: async () => {},
+      readLog: async () => '',
+      readModelLog: async () => '',
+      readRequest: async () => null,
+      listSessions: async () => [],
+      filterSessions: (metas) => ({ entries: metas, truncated: false, total: metas.length }),
+      deleteOlderThan: async () => ({ deleted: 0, remaining: 0 }),
+      getPaths: async (sessionId: string) => ({
+        dir: path.join(tmpRoot, sessionId),
+        metadata: '',
+        log: '',
+        request: '',
+      }),
+      sessionsDir: () => tmpRoot,
+    };
+
+    const runOracleImpl = vi.fn(async ({ model }: RunOracleOptions) => {
+      const delay = model === 'gemini-3-pro' ? 5 : 15;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return successResult(model as ModelName);
+    });
+
+    const promise = runMultiModelApiSession(
+      {
+        sessionMeta,
+        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.1-pro', search: false },
+        models,
+        cwd: process.cwd(),
+        version: 'test',
+        onModelDone: (result) => {
+          order.push(result.model);
+        },
+      },
+      { store, runOracleImpl },
+    );
+
+    await vi.runAllTimersAsync();
+    await promise;
+    vi.useRealTimers();
+
+    expect(order).toEqual(['gemini-3-pro', 'gpt-5.1']);
+  });
 });
