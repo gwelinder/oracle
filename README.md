@@ -116,7 +116,7 @@ See `docs/configuration.md` for precedence and full schema.
 If you’re looking for an even more powerful context-management tool, check out https://repoprompt.com  
 Name inspired by: https://ampcode.com/news/oracle
 
-More awesome stuff from steipete:
+## More awesome stuff from steipete
 - ✂️ https://trimmy.app — “Paste once, run once.” Flatten multi-line shell snippets so they paste and run.
 - 🟦🟩 https://codexbar.app — Keep Codex token windows visible in your macOS menu bar.
 - 🧳 https://mcporter.dev — TypeScript toolkit + CLI for Model Context Protocol servers.
