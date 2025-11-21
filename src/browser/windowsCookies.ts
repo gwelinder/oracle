@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import { existsSync, promises as fsp } from 'node:fs';
+import { existsSync, promises as fsp, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sqlite3 from 'sqlite3';
 import type { CookieParam } from './types.js';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 
 type UnprotectFn = (data: Buffer, entropy?: Buffer | undefined, scope?: 'CurrentUser' | 'LocalMachine') => Buffer;
 let cachedUnprotect: UnprotectFn | null = null;
@@ -57,8 +58,10 @@ export async function loadWindowsCookies(dbPath: string, filterNames?: Set<strin
     throw new Error('loadWindowsCookies is only supported on Windows');
   }
   const localStatePath = await locateLocalState(dbPath);
-  const aesKey = await extractWindowsAesKey(localStatePath);
-  const rows = await readChromeCookiesDb(dbPath, filterNames);
+  const cookiesCopy = await copyLockedFile(dbPath);
+  const localStateCopy = await copyLockedFile(localStatePath);
+  const aesKey = await extractWindowsAesKey(localStateCopy);
+  const rows = await readChromeCookiesDb(cookiesCopy, filterNames);
   const cookies: CookieParam[] = [];
   for (const row of rows) {
     const enc = row.encrypted_value && row.encrypted_value.length > 0 ? row.encrypted_value : Buffer.from(row.value ?? '', 'utf8');
@@ -133,6 +136,34 @@ function openSqlite(dbPath: string): Promise<sqlite3.Database> {
       else resolve(db);
     });
   });
+}
+
+async function copyLockedFile(sourcePath: string): Promise<string> {
+  const tempPath = path.join(os.tmpdir(), `oracle-cookie-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`);
+  const psScript = `
+$src = '${sourcePath.replace(/'/g, "''")}'
+$dst = '${tempPath.replace(/'/g, "''")}'
+try {
+  $fs = [System.IO.File]::Open($src, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+  $bytes = New-Object byte[] $fs.Length
+  $null = $fs.Read($bytes, 0, $fs.Length)
+  $fs.Close()
+  [System.IO.File]::WriteAllBytes($dst, $bytes)
+  exit 0
+} catch {
+  exit 1
+}
+`;
+  const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+    timeout: 15000,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    // Fallback: best-effort normal copy
+    await fs.copyFile(sourcePath, tempPath);
+  }
+  return tempPath;
 }
 
 function allSqlite<T>(db: sqlite3.Database, sql: string, params: unknown[]): Promise<T[]> {
