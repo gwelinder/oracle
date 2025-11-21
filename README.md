@@ -47,6 +47,10 @@ npx -y @steipete/oracle -p "Review the TS data layer" --file "src/**/*.ts" --fil
 # Mixed glob + single file
 npx -y @steipete/oracle -p "Audit data layer" --file "src/**/*.ts" --file README.md
 
+# Clipboard bundle (semi-manual)
+# Build the markdown bundle, print it, and copy to your clipboard in one go.
+oracle --render --copy -p "Summarize the risk register" --file docs/risk-register.md docs/risk-matrix.md
+
 # Dry-run (no API call) with summary estimate
 oracle --dry-run summary -p "Check release notes" --file docs/release-notes.md
 
@@ -132,6 +136,7 @@ Put per-user defaults in `~/.oracle/config.json` (parsed as JSON5, so comments/t
 | `--azure-endpoint <url>` | Use Azure OpenAI (switches client automatically). |
 | `--files-report` | Print per-file token usage. |
 | `--write-output <path>` | Write only the completed answer to `<path>`; multi-model runs append `.<model>` before the extension. |
+| `--copy-markdown` (alias `--copy`) | Copy the assembled markdown bundle to your clipboard (pair with `--render-markdown` and `--dry-run` for semi-manual workflows). |
 | `--dry-run [summary\|json\|full]` | Inspect the request without sending (alias: `--preview`). |
 
 See [docs/openai-endpoints.md](docs/openai-endpoints.md) for advanced Azure/LiteLLM configuration.
