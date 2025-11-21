@@ -153,14 +153,13 @@ export async function performSessionRun({
         if (printedModels.has(model)) return;
         printedModels.add(model);
         const body = await sessionStore.readModelLog(sessionMeta.id, model);
-        if (printedModels.size > 1) {
-          log('');
-        }
+        log('');
         if (body.length === 0) {
           log(dim(`${model}: (no output recorded)`));
           return;
         }
-        const heading = shouldStreamInline ? kleur.bold(model) : model;
+        const headingLabel = `[${model}]`;
+        const heading = shouldStreamInline ? kleur.bold(headingLabel) : headingLabel;
         log(heading);
         const printable = shouldRenderMarkdown ? renderMarkdownAnsi(body) : body;
         write(printable);
