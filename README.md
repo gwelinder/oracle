@@ -135,6 +135,9 @@ oracle serve --host 0.0.0.0:9473 --token secret123
 
 # Client: target that host
 oracle --engine browser --remote-host 192.168.1.10:9473 --remote-token secret123 -p "Run the UI smoke" --file "src/**/*.ts"
+
+# If cookies can’t sync, pass them inline (JSON/base64)
+oracle --engine browser --browser-inline-cookies-file ~/.oracle/cookies.json -p "Run the UI smoke" --file "src/**/*.ts"
 ```
 
 Session management
