@@ -136,14 +136,10 @@ export function registerConsultTool(server: McpServer): void {
       const cwd = process.cwd();
 
       const browserGuard = ensureBrowserAvailable(resolvedEngine);
-      if (
-        resolvedEngine === 'browser' &&
-        (browserGuard ||
-          (process.platform === 'linux' && !process.env.DISPLAY && !process.env.CHROME_PATH))
-      ) {
+      if (resolvedEngine === 'browser' && browserGuard) {
         return {
           isError: true,
-          content: textContent(browserGuard ?? 'Browser engine unavailable: set DISPLAY or CHROME_PATH.'),
+          content: textContent(browserGuard),
         };
       }
 

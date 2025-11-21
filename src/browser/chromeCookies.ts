@@ -358,6 +358,9 @@ async function defaultProfileRoot(): Promise<string> {
       path.join(os.homedir(), '.config', 'google-chrome'),
       path.join(os.homedir(), '.config', 'microsoft-edge'),
       path.join(os.homedir(), '.config', 'chromium'),
+      // Snap-installed Chromium stores profiles under ~/snap/chromium/common/chromium (and variants)
+      path.join(os.homedir(), 'snap', 'chromium', 'common', 'chromium'),
+      path.join(os.homedir(), 'snap', 'chromium', 'current', 'chromium'),
     );
   } else if (process.platform === 'win32') {
     const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local');
