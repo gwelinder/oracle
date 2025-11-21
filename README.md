@@ -59,12 +59,9 @@ npx -y @steipete/oracle oracle-mcp
 - Cursor setup (MCP): drop a `.cursor/mcp.json` like below, then pick “oracle” in Cursor’s MCP sources. See https://cursor.com/docs/context/mcp for UI steps.
 ```json
 {
-  "mcpServers": {
-    "oracle": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@steipete/oracle", "oracle-mcp"]
-    }
+  "oracle": {
+    "command": "npx",
+    "args": ["-y", "@steipete/oracle", "oracle-mcp"]
   }
 }
 ```
