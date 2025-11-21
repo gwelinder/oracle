@@ -59,9 +59,17 @@ OPENAI_API_KEY=sk-... oracle --base-url https://litellm.example.com/v1 -p "Summa
 oracle status --clear --hours 168   # prune a week of cached runs
 oracle status                       # list runs; grab an ID
 oracle session <id>                 # replay a run locally
+# Sessions (list + reattach)
+npx -y @steipete/oracle status
+npx -y @steipete/oracle session <id>
+
+# TUI (interactive, for humans only)
+npx -y @steipete/oracle
 ```
 
 ## How do I integrate this?
+**Recommendation:** Prefer API (default) or manual bundle/copy flows. Full browser automation is experimental (macOS + Chrome only today) and may be blocked by login/Cloudflare challenges. (for humans) - preview first.
+Keys are loaded automatically from provider env vars (OpenAI, Gemini, Claude, Azure/LiteLLM); pass them inline only if you must.
 
 **CLI** (direct calls; great for CI or scripted tasks)
 - One-liner in CI: `OPENAI_API_KEY=sk-... npx -y @steipete/oracle --prompt "Smoke-check latest PR" --file src/ docs/ --preview summary`.
