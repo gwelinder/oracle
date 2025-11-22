@@ -54,6 +54,8 @@ export interface BrowserAutomationConfig {
   debug?: boolean;
   allowCookieErrors?: boolean;
   remoteChrome?: { host: string; port: number } | null;
+  manualLogin?: boolean;
+  manualLoginProfileDir?: string | null;
 }
 
 export interface BrowserRunOptions {
@@ -86,4 +88,6 @@ export type ResolvedBrowserConfig = Required<
   desiredModel?: string | null;
   inlineCookiesSource?: string | null;
   remoteChrome?: { host: string; port: number } | null;
+  manualLogin?: boolean;
+  manualLoginProfileDir?: string | null;
 };

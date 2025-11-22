@@ -32,6 +32,7 @@ export interface BrowserFlagOptions {
   browserHeadless?: boolean;
   browserHideWindow?: boolean;
   browserKeepBrowser?: boolean;
+  browserManualLogin?: boolean;
   browserModelLabel?: string;
   browserAllowCookieErrors?: boolean;
   remoteChrome?: string;
@@ -75,6 +76,7 @@ export async function buildBrowserConfig(options: BrowserFlagOptions): Promise<B
     inlineCookiesSource: inline?.source ?? null,
     headless: undefined, // disable headless; Cloudflare blocks it
     keepBrowser: options.browserKeepBrowser ? true : undefined,
+    manualLogin: options.browserManualLogin ? true : undefined,
     hideWindow: options.browserHideWindow ? true : undefined,
     desiredModel: shouldUseOverride ? desiredModelOverride : mapModelToBrowserLabel(options.model),
     debug: options.verbose ? true : undefined,

@@ -112,6 +112,7 @@ interface CliOptions extends OptionValues {
   browserHeadless?: boolean;
   browserHideWindow?: boolean;
   browserKeepBrowser?: boolean;
+  browserManualLogin?: boolean;
   browserAllowCookieErrors?: boolean;
   browserInlineFiles?: boolean;
   browserBundleFiles?: boolean;
@@ -345,6 +346,12 @@ program
     new Option('--browser-inline-cookies-file <path>', 'Load inline cookies from file (JSON or base64 JSON).').hideHelp(),
   )
   .addOption(new Option('--browser-no-cookie-sync', 'Skip copying cookies from Chrome.').hideHelp())
+  .addOption(
+    new Option(
+      '--browser-manual-login',
+      'Skip cookie copy; reuse a persistent automation profile and wait for manual ChatGPT login.',
+    ).hideHelp(),
+  )
   .addOption(new Option('--browser-headless', 'Launch Chrome in headless mode.').hideHelp())
   .addOption(new Option('--browser-hide-window', 'Hide the Chrome window after launch (macOS headful only).').hideHelp())
   .addOption(new Option('--browser-keep-browser', 'Keep Chrome running after completion.').hideHelp())
@@ -1174,6 +1181,7 @@ function printDebugHelp(cliName: string): void {
     ['--browser-timeout <ms|s|m>', 'Cap total wait time for the assistant response.'],
     ['--browser-input-timeout <ms|s|m>', 'Cap how long we wait for the composer textarea.'],
     ['--browser-no-cookie-sync', 'Skip copying cookies from your main profile.'],
+    ['--browser-manual-login', 'Skip cookie copy; reuse a persistent automation profile and log in manually.'],
     ['--browser-headless', 'Launch Chrome in headless mode.'],
     ['--browser-hide-window', 'Hide the Chrome window (macOS headful only).'],
     ['--browser-keep-browser', 'Leave Chrome running after completion.'],

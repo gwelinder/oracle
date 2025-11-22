@@ -1,6 +1,8 @@
 import { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
 import type { BrowserAutomationConfig, ResolvedBrowserConfig } from './types.js';
 import { normalizeChatgptUrl } from './utils.js';
+import os from 'node:os';
+import path from 'node:path';
 
 export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   chromeProfile: null,
@@ -21,6 +23,8 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   debug: false,
   allowCookieErrors: false,
   remoteChrome: null,
+  manualLogin: false,
+  manualLoginProfileDir: null,
 };
 
 export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined): ResolvedBrowserConfig {
@@ -29,6 +33,11 @@ export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined
     (process.env.ORACLE_BROWSER_ALLOW_COOKIE_ERRORS ?? '').trim() === '1';
   const rawUrl = config?.chatgptUrl ?? config?.url ?? DEFAULT_BROWSER_CONFIG.url;
   const normalizedUrl = normalizeChatgptUrl(rawUrl ?? DEFAULT_BROWSER_CONFIG.url, DEFAULT_BROWSER_CONFIG.url);
+  const manualLogin = config?.manualLogin ?? DEFAULT_BROWSER_CONFIG.manualLogin;
+  const resolvedProfileDir =
+    config?.manualLoginProfileDir ??
+    process.env.ORACLE_BROWSER_PROFILE_DIR ??
+    path.join(os.homedir(), '.oracle', 'browser-profile');
   return {
     ...DEFAULT_BROWSER_CONFIG,
     ...(config ?? {}),
@@ -49,5 +58,7 @@ export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined
     chromeCookiePath: config?.chromeCookiePath ?? DEFAULT_BROWSER_CONFIG.chromeCookiePath,
     debug: config?.debug ?? DEFAULT_BROWSER_CONFIG.debug,
     allowCookieErrors: config?.allowCookieErrors ?? envAllowCookieErrors ?? DEFAULT_BROWSER_CONFIG.allowCookieErrors,
+    manualLogin,
+    manualLoginProfileDir: manualLogin ? resolvedProfileDir : null,
   };
 }

@@ -28,6 +28,8 @@ export interface BrowserSessionConfig {
   debug?: boolean;
   allowCookieErrors?: boolean;
   remoteChrome?: { host: string; port: number } | null;
+  manualLogin?: boolean;
+  manualLoginProfileDir?: string | null;
 }
 
 export interface BrowserRuntimeMetadata {

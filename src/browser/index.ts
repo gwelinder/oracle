@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { resolveBrowserConfig } from './config.js';
@@ -25,7 +25,7 @@ import {
   readAssistantSnapshot,
 } from './pageActions.js';
 import { uploadAttachmentViaDataTransfer } from './actions/remoteFileTransfer.js';
-import { estimateTokenCount, withRetries } from './utils.js';
+import { estimateTokenCount, withRetries, delay } from './utils.js';
 import { formatElapsed } from '../oracle/format.js';
 import { CHATGPT_URL } from './constants.js';
 
@@ -71,13 +71,23 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     return runRemoteBrowserMode(promptText, attachments, config, logger, options);
   }
 
-  const userDataDir = await mkdtemp(path.join(os.tmpdir(), 'oracle-browser-'));
-  logger(`Created temporary Chrome profile at ${userDataDir}`);
+  const manualLogin = Boolean(config.manualLogin);
+  const manualProfileDir = config.manualLoginProfileDir
+    ? path.resolve(config.manualLoginProfileDir)
+    : path.join(os.homedir(), '.oracle', 'browser-profile');
+  const userDataDir = manualLogin ? manualProfileDir : await mkdtemp(path.join(os.tmpdir(), 'oracle-browser-'));
+  if (manualLogin) {
+    await mkdir(userDataDir, { recursive: true });
+    logger(`Manual login mode enabled; reusing persistent profile at ${userDataDir}`);
+  } else {
+    logger(`Created temporary Chrome profile at ${userDataDir}`);
+  }
 
+  const effectiveKeepBrowser = config.keepBrowser || manualLogin;
   const chrome = await launchChrome(config, userDataDir, logger);
   let removeTerminationHooks: (() => void) | null = null;
   try {
-    removeTerminationHooks = registerTerminationHooks(chrome, userDataDir, config.keepBrowser, logger);
+    removeTerminationHooks = registerTerminationHooks(chrome, userDataDir, effectiveKeepBrowser, logger);
   } catch {
     // ignore failure; cleanup still happens below
   }
@@ -114,9 +124,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       domainEnablers.push(DOM.enable());
     }
     await Promise.all(domainEnablers);
-    await Network.clearBrowserCookies();
+    if (!manualLogin) {
+      await Network.clearBrowserCookies();
+    }
 
-    if (config.cookieSync) {
+    const cookieSyncEnabled = config.cookieSync && !manualLogin;
+    if (cookieSyncEnabled) {
       if (!config.inlineCookies) {
         logger(
           'Heads-up: macOS may prompt for your Keychain password to read Chrome cookies; use --copy or --render for manual flow.',
@@ -144,7 +157,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
             : 'No Chrome cookies found; continuing without session reuse',
       );
     } else {
-      logger('Skipping Chrome cookie sync (--browser-no-cookie-sync)');
+      logger(
+        manualLogin
+          ? 'Skipping Chrome cookie sync (--browser-manual-login enabled); reuse the opened profile after signing in.'
+          : 'Skipping Chrome cookie sync (--browser-no-cookie-sync)',
+      );
     }
 
     const baseUrl = CHATGPT_URL;
@@ -152,7 +169,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     // then hop to the requested URL if it differs.
     await raceWithDisconnect(navigateToChatGPT(Page, Runtime, baseUrl, logger));
     await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
-    await raceWithDisconnect(ensureLoggedIn(Runtime, logger, { appliedCookies }));
+    await raceWithDisconnect(waitForLogin({ Runtime, logger, appliedCookies, manualLogin, timeoutMs: config.timeoutMs }));
 
     if (config.url !== baseUrl) {
       await raceWithDisconnect(navigateToChatGPT(Page, Runtime, config.url, logger));
@@ -310,7 +327,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       // ignore
     }
     removeTerminationHooks?.();
-    if (!config.keepBrowser) {
+    if (!effectiveKeepBrowser) {
       if (!connectionClosedUnexpectedly) {
         try {
           await chrome.kill();
@@ -327,6 +344,49 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger(`Chrome left running on port ${chrome.port} with profile ${userDataDir}`);
     }
   }
+}
+
+async function waitForLogin({
+  Runtime,
+  logger,
+  appliedCookies,
+  manualLogin,
+  timeoutMs,
+}: {
+  Runtime: ChromeClient['Runtime'];
+  logger: BrowserLogger;
+  appliedCookies: number;
+  manualLogin: boolean;
+  timeoutMs: number;
+}): Promise<void> {
+  if (!manualLogin) {
+    await ensureLoggedIn(Runtime, logger, { appliedCookies });
+    return;
+  }
+  const deadline = Date.now() + Math.min(timeoutMs ?? 1_200_000, 20 * 60_000);
+  let lastNotice = 0;
+  while (Date.now() < deadline) {
+    try {
+      await ensureLoggedIn(Runtime, logger, { appliedCookies });
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const loginDetected = message?.toLowerCase().includes('login button');
+      const sessionMissing = message?.toLowerCase().includes('session not detected');
+      if (!loginDetected && !sessionMissing) {
+        throw error;
+      }
+      const now = Date.now();
+      if (now - lastNotice > 5000) {
+        logger(
+          'Manual login mode: please sign into chatgpt.com in the opened Chrome window; waiting for session to appear...',
+        );
+        lastNotice = now;
+      }
+      await delay(1000);
+    }
+  }
+  throw new Error('Manual login mode timed out waiting for ChatGPT session; please sign in and retry.');
 }
 
 async function runRemoteBrowserMode(

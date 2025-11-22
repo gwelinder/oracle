@@ -1,6 +1,6 @@
 # Browser Mode
 
-`oracle --engine browser` routes the assembled prompt bundle through the ChatGPT web UI instead of the Responses API. (Legacy `--browser` still maps to `--engine browser`, but it will be removed.) If you omit `--engine`, Oracle first honors any `engine` value in `~/.oracle/config.json`, then auto-picks API when `OPENAI_API_KEY` is available and falls back to browser otherwise. The CLI writes the same session metadata/logs as API runs, but the payload is pasted into ChatGPT via a temporary Chrome profile.
+`oracle --engine browser` routes the assembled prompt bundle through the ChatGPT web UI instead of the Responses API. (Legacy `--browser` still maps to `--engine browser`, but it will be removed.) If you omit `--engine`, Oracle first honors any `engine` value in `~/.oracle/config.json`, then auto-picks API when `OPENAI_API_KEY` is available and falls back to browser otherwise. The CLI writes the same session metadata/logs as API runs, and by default pastes the payload into ChatGPT via a temporary Chrome profile (manual-login mode can reuse a persistent automation profile).
 
 `--preview` now works with `--engine browser`: it renders the composed prompt, lists which files would be uploaded vs inlined, and shows the bundle location when bundling is enabled, without launching Chrome.
 
@@ -47,7 +47,7 @@ You can pass the same payload inline (`--browser-inline-cookies '<json or base64
 - `--browser-cookie-path`: explicit path to the Chrome/Chromium/Edge `Cookies` SQLite DB. Handy when you launch a fork via `--browser-chrome-path` and want to copy its session cookies; see [docs/chromium-forks.md](chromium-forks.md) for examples.
 - `--chatgpt-url`: override the ChatGPT base URL. Works with the root homepage (`https://chatgpt.com/`) **or** a specific workspace/folder link such as `https://chatgpt.com/g/.../project`. `--browser-url` stays as a hidden alias.
 - `--browser-timeout`, `--browser-input-timeout`: `1200s (20m)`/`30s` defaults. Durations accept `ms`, `s`, `m`, or `h` and can be chained (`1h2m10s`).
-- `--browser-no-cookie-sync`, `--browser-headless`, `--browser-hide-window`, `--browser-keep-browser`, and the global `-v/--verbose` flag for detailed automation logs.
+- `--browser-no-cookie-sync`, `--browser-manual-login` (persistent automation profile + user-driven login), `--browser-headless`, `--browser-hide-window`, `--browser-keep-browser`, and the global `-v/--verbose` flag for detailed automation logs.
 - `--browser-url`: override ChatGPT base URL if needed.
 - `--browser-inline-files`: paste resolved files directly into the composer instead of uploading them (debug fallback; useful when the attachment button is broken).
 - `--browser-bundle-files`: bundle all resolved attachments into a single temp file before uploading (useful when you want one upload even with many files).

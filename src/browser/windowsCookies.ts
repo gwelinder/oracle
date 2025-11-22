@@ -86,7 +86,8 @@ export async function loadWindowsCookies(dbPath: string, filterNames?: Set<strin
 
 function decryptCookie(value: Buffer, aesKey: Buffer): string {
   const prefix = value.slice(0, 3).toString();
-  if (prefix === 'v10' || prefix === 'v11') {
+  // Chrome prefixes AES-GCM encrypted cookies with version markers like v10/v11/v20; treat all v** the same.
+  if (/^v\d{2}$/u.test(prefix)) {
     const iv = value.slice(3, 15);
     const tag = value.slice(value.length - 16);
     const data = value.slice(15, value.length - 16);
