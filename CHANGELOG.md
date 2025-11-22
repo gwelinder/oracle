@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## 0.4.6 — unreleased
 
+### Changed
+- Default system prompt no longer asks models to announce when the search tool was used.
+
 ### Fixed
 - CLI/TUI now print the intro banner only once; forced TUI launches (`ORACLE_FORCE_TUI` or no args in a TTY) no longer show duplicate 🧿 header lines.
 - TUI session list cleans up separators, removing the `__disabled__ (Disabled)` placeholder and `(Disabled)` tag on the header row.
@@ -128,7 +131,7 @@ All notable changes to this project will be documented in this file.
 - macOS notifier helper now ships signed/notarized with the Oracle icon and auto-repairs execute bits for the fallback terminal-notifier.
 - Session summaries and cost displays are clearer, with zombie-session detection to avoid stale runs.
 - Token estimation now uses the full request body (instructions + input text + tools/reasoning/background/store) and compares estimated vs actual tokens in the finished stats to reduce 400/413 surprises.
-- Help tips now explicitly warn that Oracle cannot see your project unless you pass `--file …` to attach the necessary source.
+- Help banner and first tip now require “prompt + --file” (dirs/globs fine) and remind you Oracle can’t see your project without attachments.
 - Help tips/examples now call out project/platform/version requirements and show how to label cross-repo attachments so the model has the right context.
 
 #### MCP configuration (quick reference)
