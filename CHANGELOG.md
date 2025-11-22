@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - Windows cookie reader now accepts any `v**` AES-GCM prefix (v10/v11/v20) to stay forward compatible.
+- On Windows, cookie sync is disabled by default and manual-login is forced; use inline cookies or `--browser-manual-login` (default) instead of profile-based cookie copy.
 
 ## 0.4.5 — 2025-11-22
 

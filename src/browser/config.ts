@@ -33,7 +33,9 @@ export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined
     (process.env.ORACLE_BROWSER_ALLOW_COOKIE_ERRORS ?? '').trim() === '1';
   const rawUrl = config?.chatgptUrl ?? config?.url ?? DEFAULT_BROWSER_CONFIG.url;
   const normalizedUrl = normalizeChatgptUrl(rawUrl ?? DEFAULT_BROWSER_CONFIG.url, DEFAULT_BROWSER_CONFIG.url);
-  const manualLogin = config?.manualLogin ?? DEFAULT_BROWSER_CONFIG.manualLogin;
+  const isWindows = process.platform === 'win32';
+  const manualLogin = config?.manualLogin ?? (isWindows ? true : DEFAULT_BROWSER_CONFIG.manualLogin);
+  const cookieSyncDefault = isWindows ? false : DEFAULT_BROWSER_CONFIG.cookieSync;
   const resolvedProfileDir =
     config?.manualLoginProfileDir ??
     process.env.ORACLE_BROWSER_PROFILE_DIR ??
@@ -45,7 +47,7 @@ export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined
     chatgptUrl: normalizedUrl,
     timeoutMs: config?.timeoutMs ?? DEFAULT_BROWSER_CONFIG.timeoutMs,
     inputTimeoutMs: config?.inputTimeoutMs ?? DEFAULT_BROWSER_CONFIG.inputTimeoutMs,
-    cookieSync: config?.cookieSync ?? DEFAULT_BROWSER_CONFIG.cookieSync,
+    cookieSync: config?.cookieSync ?? cookieSyncDefault,
     cookieNames: config?.cookieNames ?? DEFAULT_BROWSER_CONFIG.cookieNames,
     inlineCookies: config?.inlineCookies ?? DEFAULT_BROWSER_CONFIG.inlineCookies,
     inlineCookiesSource: config?.inlineCookiesSource ?? DEFAULT_BROWSER_CONFIG.inlineCookiesSource,

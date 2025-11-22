@@ -28,6 +28,11 @@ export async function loadChromeCookies({
   explicitCookiePath,
   filterNames,
 }: LoadChromeCookiesOptions): Promise<CookieParam[]> {
+  if (process.platform === 'win32') {
+    throw new Error(
+      'Cookie sync is disabled on Windows; use --browser-manual-login (persistent profile) or inline cookies instead.',
+    );
+  }
   const urlsToCheck = Array.from(new Set([stripQuery(targetUrl), ...COOKIE_URLS]));
   const merged = new Map<string, CookieParam>();
   const cookieFile = await resolveCookieFilePath({ explicitPath: explicitCookiePath, profile });
