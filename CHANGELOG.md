@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - MCP/API runs now surface 404/405 Responses API failures as “unsupported-endpoint” with actionable guidance (check OPENAI_BASE_URL/Azure setup or use the browser engine) instead of a generic transport error.
+- Publish metadata now declares Node >=20 (engines/devEngines) and drops the implicit bun runtime so `npx @steipete/oracle` no longer fails with EBADDEVENGINES on newer Node versions.
 
 ## 0.4.3 — 2025-11-22
 

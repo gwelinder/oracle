@@ -41,6 +41,21 @@
     "type": "git",
     "url": "git+https://github.com/steipete/oracle.git"
   },
+  "engines": {
+    "node": ">=20"
+  },
+  "devEngines": {
+    "runtime": [
+      {
+        "name": "node",
+        "version": ">=20"
+      }
+    ],
+    "packageManager": {
+      "name": "pnpm",
+      "version": ">=8"
+    }
+  },
   "keywords": [],
   "author": "",
   "license": "MIT",
