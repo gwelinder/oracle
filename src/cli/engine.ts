@@ -1,10 +1,10 @@
-import { PRO_MODELS } from '../oracle.js';
+import { isProModel } from '../oracle/modelResolver.js';
 
 export type EngineMode = 'api' | 'browser';
 
 export function defaultWaitPreference(model: string, engine: EngineMode): boolean {
   // Pro-class API runs can take a long time; prefer non-blocking unless explicitly overridden.
-  if (engine === 'api' && PRO_MODELS.has(model as Parameters<typeof PRO_MODELS.has>[0])) {
+  if (engine === 'api' && isProModel(model)) {
     return false;
   }
   return true; // browser or non-pro models are fast enough to block by default

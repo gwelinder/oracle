@@ -1,18 +1,19 @@
 import { countTokens as countTokensGpt5 } from 'gpt-tokenizer/model/gpt-5';
 import { countTokens as countTokensGpt5Pro } from 'gpt-tokenizer/model/gpt-5-pro';
-import type { ModelConfig, ModelName, ProModelName, TokenizerFn } from './types.js';
+import type { ModelConfig, ModelName, KnownModelName, ProModelName, TokenizerFn } from './types.js';
 import { countTokens as countTokensAnthropicRaw } from '@anthropic-ai/tokenizer';
 import { stringifyTokenizerInput } from './tokenStringifier.js';
 
 export const DEFAULT_MODEL: ModelName = 'gpt-5.1-pro';
-export const PRO_MODELS = new Set<ProModelName>(['gpt-5.1-pro', 'gpt-5-pro', 'claude-4.1-opus']);
+export const PRO_MODELS = new Set<ProModelName>(['gpt-5.1-pro', 'gpt-5-pro', 'claude-4.5-sonnet', 'claude-4.1-opus']);
 
 const countTokensAnthropic: TokenizerFn = (input: unknown): number =>
   countTokensAnthropicRaw(stringifyTokenizerInput(input));
 
-export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
+export const MODEL_CONFIGS: Record<KnownModelName, ModelConfig> = {
   'gpt-5.1-pro': {
     model: 'gpt-5.1-pro',
+    provider: 'openai',
     tokenizer: countTokensGpt5Pro as TokenizerFn,
     inputLimit: 196000,
     pricing: {
@@ -23,6 +24,7 @@ export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
   },
   'gpt-5-pro': {
     model: 'gpt-5-pro',
+    provider: 'openai',
     tokenizer: countTokensGpt5Pro as TokenizerFn,
     inputLimit: 196000,
     pricing: {
@@ -33,6 +35,7 @@ export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
   },
   'gpt-5.1': {
     model: 'gpt-5.1',
+    provider: 'openai',
     tokenizer: countTokensGpt5 as TokenizerFn,
     inputLimit: 196000,
     pricing: {
@@ -43,6 +46,7 @@ export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
   },
   'gpt-5.1-codex': {
     model: 'gpt-5.1-codex',
+    provider: 'openai',
     tokenizer: countTokensGpt5 as TokenizerFn,
     inputLimit: 196000,
     pricing: {
@@ -53,6 +57,7 @@ export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
   },
   'gemini-3-pro': {
     model: 'gemini-3-pro',
+    provider: 'google',
     tokenizer: countTokensGpt5Pro as TokenizerFn,
     inputLimit: 200000,
     pricing: {
@@ -66,6 +71,7 @@ export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
   'claude-4.5-sonnet': {
     model: 'claude-4.5-sonnet',
     apiModel: 'claude-sonnet-4-5',
+    provider: 'anthropic',
     tokenizer: countTokensAnthropic,
     inputLimit: 200000,
     pricing: {
@@ -79,6 +85,7 @@ export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
   'claude-4.1-opus': {
     model: 'claude-4.1-opus',
     apiModel: 'claude-opus-4-1',
+    provider: 'anthropic',
     tokenizer: countTokensAnthropic,
     inputLimit: 200000,
     pricing: {
@@ -92,6 +99,7 @@ export const MODEL_CONFIGS: Record<ModelName, ModelConfig> = {
   'grok-4.1': {
     model: 'grok-4.1',
     apiModel: 'grok-4-1-fast-reasoning',
+    provider: 'xai',
     tokenizer: countTokensGpt5Pro as TokenizerFn,
     inputLimit: 2_000_000,
     pricing: {

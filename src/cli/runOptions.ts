@@ -120,9 +120,9 @@ function resolveEngineWithConfig({
 }
 
 function resolveEffectiveModelId(model: ModelName): string {
-  if (model.startsWith('gemini')) {
+  if (typeof model === 'string' && model.startsWith('gemini')) {
     return resolveGeminiModelId(model);
   }
-  const config = MODEL_CONFIGS[model];
+  const config = MODEL_CONFIGS[model as keyof typeof MODEL_CONFIGS];
   return config?.apiModel ?? model;
 }

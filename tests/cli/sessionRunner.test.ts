@@ -857,6 +857,29 @@ describe('performSessionRun', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('Transport'));
   });
 
+  test('stores api-error transport message for later rendering', async () => {
+    vi.mocked(runOracle).mockRejectedValue(new OracleTransportError('api-error', 'quota exceeded'));
+
+    await expect(
+      performSessionRun({
+        sessionMeta: baseSessionMeta,
+        runOptions: baseRunOptions,
+        mode: 'api',
+        cwd: '/tmp',
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toThrow('quota exceeded');
+
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: 'error',
+      transport: { reason: 'api-error' },
+      errorMessage: 'quota exceeded',
+    });
+  });
+
   test('captures user errors when OracleUserError thrown', async () => {
     vi.mocked(runOracle).mockRejectedValue(new FileValidationError('too large', { path: 'foo.txt' }));
 

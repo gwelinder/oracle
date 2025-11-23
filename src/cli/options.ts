@@ -167,9 +167,8 @@ export function resolveApiModel(modelValue: string): ModelName {
   if (normalized.includes('gemini')) {
     return 'gemini-3-pro';
   }
-  throw new InvalidArgumentError(
-    `Unsupported model "${modelValue}". Choose one of: ${Object.keys(MODEL_CONFIGS).join(', ')}`,
-  );
+  // Passthrough for custom/OpenRouter model IDs.
+  return normalized as ModelName;
 }
 
 export function inferModelFromLabel(modelValue: string): ModelName {

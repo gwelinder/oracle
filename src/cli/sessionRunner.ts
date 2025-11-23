@@ -23,6 +23,7 @@ import {
 import { sessionStore } from '../sessionStore.js';
 import { runMultiModelApiSession } from '../oracle/multiModelRunner.js';
 import { MODEL_CONFIGS, DEFAULT_SYSTEM_PROMPT } from '../oracle/config.js';
+import { resolveModelConfig } from '../oracle/modelResolver.js';
 import { buildPrompt, buildRequestBody } from '../oracle/request.js';
 import { estimateRequestTokens } from '../oracle/tokenEstimate.js';
 import { formatTokenEstimate, formatTokenValue } from '../oracle/runUtils.js';
@@ -133,10 +134,10 @@ export async function performSessionRun({
       if (!primaryModel) {
         throw new Error('Missing model name for multi-model run.');
       }
-      const modelConfig = MODEL_CONFIGS[primaryModel];
-      if (!modelConfig) {
-        throw new Error(`Unsupported model "${primaryModel}".`);
-      }
+      const modelConfig = await resolveModelConfig(primaryModel, {
+        baseUrl: runOptions.baseUrl,
+        openRouterApiKey: process.env.OPENROUTER_API_KEY,
+      });
       const files = await readFiles(runOptions.file ?? [], { cwd });
       const promptWithFiles = buildPrompt(runOptions.prompt, files, cwd);
       const requestBody = buildRequestBody({

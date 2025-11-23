@@ -63,3 +63,16 @@ Or via `config.json`:
    ```bash
    oracle --base-url http://localhost:4000
    ```
+
+## OpenRouter
+
+Oracle can also talk to OpenRouter (Responses API compatible) with any model id:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+oracle --model minimax/minimax-m2 --prompt "Summarize the notes"
+```
+
+- If `OPENROUTER_API_KEY` is set and no provider-specific key is available for the chosen model, Oracle defaults the base URL to `https://openrouter.ai/api/v1/responses`.
+- You can still set `--base-url` explicitly; if it points at OpenRouter, Oracle will use `OPENROUTER_API_KEY` and forward optional attribution headers (`OPENROUTER_REFERER` / `OPENROUTER_TITLE`).
+- Multi-model runs accept OpenRouter ids alongside built-in ones. See `docs/openrouter.md` for details.

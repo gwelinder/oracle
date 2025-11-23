@@ -12,6 +12,7 @@ import type {
 } from './types.js';
 import { createGeminiClient } from './gemini.js';
 import { createClaudeClient } from './claude.js';
+import { isOpenRouterBaseUrl } from './modelResolver.js';
 
 export function createDefaultClientFactory(): ClientFactory {
   const customFactory = loadCustomClientFactory();
@@ -29,6 +30,9 @@ export function createDefaultClientFactory(): ClientFactory {
     }
 
     let instance: OpenAI;
+    const defaultHeaders: Record<string, string> | undefined = isOpenRouterBaseUrl(options?.baseUrl)
+      ? buildOpenRouterHeaders()
+      : undefined;
 
     if (options?.azure?.endpoint) {
       instance = new AzureOpenAI({
@@ -43,6 +47,7 @@ export function createDefaultClientFactory(): ClientFactory {
         apiKey: key,
         timeout: 20 * 60 * 1000,
         baseURL: options?.baseUrl,
+        defaultHeaders,
       });
     }
 
@@ -56,6 +61,19 @@ export function createDefaultClientFactory(): ClientFactory {
       },
     };
   };
+}
+
+function buildOpenRouterHeaders(): Record<string, string> | undefined {
+  const headers: Record<string, string> = {};
+  const referer = process.env.OPENROUTER_REFERER ?? process.env.OPENROUTER_HTTP_REFERER;
+  const title = process.env.OPENROUTER_TITLE;
+  if (referer) {
+    headers['HTTP-Referer'] = referer;
+  }
+  if (title) {
+    headers['X-Title'] = title;
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
 function loadCustomClientFactory(): ClientFactory | null {

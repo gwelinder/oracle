@@ -1,6 +1,6 @@
 export type TokenizerFn = (input: unknown, options?: Record<string, unknown>) => number;
 
-export type ModelName =
+export type KnownModelName =
   | 'gpt-5.1-pro'
   | 'gpt-5-pro'
   | 'gpt-5.1'
@@ -9,6 +9,9 @@ export type ModelName =
   | 'claude-4.5-sonnet'
   | 'claude-4.1-opus'
   | 'grok-4.1';
+
+// ModelName now allows arbitrary strings so OpenRouter / custom IDs can pass through.
+export type ModelName = KnownModelName | (string & {});
 
 export type ProModelName = 'gpt-5.1-pro' | 'gpt-5-pro' | 'claude-4.5-sonnet' | 'claude-4.1-opus';
 
@@ -29,6 +32,10 @@ export interface ModelConfig {
   model: ModelName;
   /** Provider-specific model id used for API calls (defaults to `model`). */
   apiModel?: string;
+  /** Upstream provider to help with OpenRouter mapping and auth precedence. */
+  provider?: 'openai' | 'anthropic' | 'google' | 'xai' | 'other';
+  /** Explicit OpenRouter model id when it differs from apiModel/model. */
+  openRouterId?: string;
   tokenizer: TokenizerFn;
   inputLimit: number;
   pricing?: {

@@ -6,6 +6,7 @@ import type { WriteStream } from 'node:fs';
 import type { CookieParam } from './browser/types.js';
 import type { TransportFailureReason, AzureOptions, ModelName } from './oracle.js';
 import { DEFAULT_MODEL } from './oracle.js';
+import { safeModelSlug } from './oracle/modelResolver.js';
 
 export type SessionMode = 'api' | 'browser';
 
@@ -234,11 +235,13 @@ function modelsDir(id: string): string {
 }
 
 function modelJsonPath(id: string, model: string): string {
-  return path.join(modelsDir(id), `${model}${MODEL_JSON_EXTENSION}`);
+  const slug = safeModelSlug(model);
+  return path.join(modelsDir(id), `${slug}${MODEL_JSON_EXTENSION}`);
 }
 
 function modelLogPath(id: string, model: string): string {
-  return path.join(modelsDir(id), `${model}${MODEL_LOG_EXTENSION}`);
+  const slug = safeModelSlug(model);
+  return path.join(modelsDir(id), `${slug}${MODEL_LOG_EXTENSION}`);
 }
 
 async function fileExists(targetPath: string): Promise<boolean> {

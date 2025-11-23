@@ -93,9 +93,9 @@ npx -y @steipete/oracle oracle-mcp
 | `-p, --prompt <text>` | Required prompt. |
 | `-f, --file <paths...>` | Attach files/dirs (globs + `!` excludes). |
 | `-e, --engine <api\|browser>` | Choose API or browser (browser is experimental). |
-| `-m, --model <name>` | `gpt-5.1-pro` (default), `gpt-5-pro`, `gpt-5.1`, `gpt-5.1-codex` (API-only), `gemini-3-pro`, `claude-4.5-sonnet`, `claude-4.1-opus`, plus documented aliases. |
-| `--models <list>` | Comma-separated API models for multi-model runs. |
-| `--base-url <url>` | Point API runs at LiteLLM/Azure/etc. |
+| `-m, --model <name>` | Built-ins (`gpt-5.1-pro` default, `gpt-5-pro`, `gpt-5.1`, `gpt-5.1-codex`, `gemini-3-pro`, `claude-4.5-sonnet`, `claude-4.1-opus`) plus any OpenRouter id (e.g., `minimax/minimax-m2`, `openai/gpt-4o-mini`). |
+| `--models <list>` | Comma-separated API models (mix built-ins and OpenRouter ids) for multi-model runs. |
+| `--base-url <url>` | Point API runs at LiteLLM/Azure/OpenRouter/etc. |
 | `--chatgpt-url <url>` | Target a ChatGPT workspace/folder (browser). |
 | `--browser-port <port>` | Pin the Chrome DevTools port (WSL/Windows firewall helper). |
 | `--browser-inline-cookies[(-file)] <payload|path>` | Supply cookies without Chrome/Keychain (browser). |
@@ -153,7 +153,7 @@ oracle status --clear --hours 168
 ## More docs
 - Browser mode & forks: [docs/browser-mode.md](docs/browser-mode.md) (includes `oracle serve` remote service), [docs/chromium-forks.md](docs/chromium-forks.md), [docs/linux.md](docs/linux.md)
 - MCP: [docs/mcp.md](docs/mcp.md)
-- OpenAI/Azure endpoints: [docs/openai-endpoints.md](docs/openai-endpoints.md)
+- OpenAI/Azure/OpenRouter endpoints: [docs/openai-endpoints.md](docs/openai-endpoints.md), [docs/openrouter.md](docs/openrouter.md)
 - Manual smokes: [docs/manual-tests.md](docs/manual-tests.md)
 - Testing: [docs/testing.md](docs/testing.md)
 
