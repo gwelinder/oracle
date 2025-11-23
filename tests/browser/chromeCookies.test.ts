@@ -38,9 +38,14 @@ describe('loadChromeCookies hardening', () => {
     const cookieFile = await createTempCookieFile();
 
     try {
-      await expect(
+      const expectation = expect(
         loadChromeCookies({ targetUrl: 'https://chatgpt.com', explicitCookiePath: cookieFile }),
-      ).rejects.toThrow(/Timed out reading Chrome cookies/i);
+      ).rejects;
+      if (process.platform === 'win32') {
+        await expectation.toThrow(/Cookie sync is disabled on Windows/i);
+      } else {
+        await expectation.toThrow(/Timed out reading Chrome cookies/i);
+      }
     } finally {
       await fs.rm(path.dirname(cookieFile), { recursive: true, force: true });
     }

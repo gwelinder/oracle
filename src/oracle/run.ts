@@ -127,7 +127,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   const isAzureOpenAI = Boolean(options.azure?.endpoint);
 
   const getApiKeyForModel = (model: ModelName): { key?: string; source: string } => {
-    if (isOpenRouterBaseUrl(baseUrl) || (providerKeyMissing && openRouterApiKey)) {
+    if (isOpenRouterBaseUrl(baseUrl) || openRouterFallback) {
       return { key: optionsApiKey ?? openRouterApiKey, source: 'OPENROUTER_API_KEY' };
     }
     if (typeof model === 'string' && model.startsWith('gpt')) {
@@ -153,7 +153,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   const apiKeyResult = getApiKeyForModel(options.model);
   const apiKey = apiKeyResult.key;
   if (!apiKey) {
-    const envVar = isOpenRouterBaseUrl(baseUrl) || providerKeyMissing
+    const envVar = isOpenRouterBaseUrl(baseUrl) || openRouterFallback
       ? 'OPENROUTER_API_KEY'
       : options.model.startsWith('gpt')
         ? isAzureOpenAI
