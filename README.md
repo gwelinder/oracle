@@ -78,7 +78,7 @@ npx -y @steipete/oracle oracle-mcp
 ## Highlights
 
 - Bundle once, reuse anywhere (API or experimental browser).
-- Multi-model API runs with aggregated cost/usage.
+- Multi-model API runs with aggregated cost/usage, including OpenRouter IDs alongside first-party models.
 - Render/copy bundles for manual paste into ChatGPT when automation is blocked.
 - GPT‑5 Pro API runs detach by default; reattach via `oracle session <id>` / `oracle status` or block with `--wait`.
 - Azure endpoints supported via `--azure-endpoint/--azure-deployment/--azure-api-version` or `AZURE_OPENAI_*` envs.
