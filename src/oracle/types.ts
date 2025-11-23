@@ -245,6 +245,7 @@ export type TransportFailureReason =
   | 'client-timeout'
   | 'connection-lost'
   | 'client-abort'
+  | 'api-error'
   | 'model-unavailable'
   | 'unsupported-endpoint'
   | 'unknown';

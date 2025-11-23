@@ -24,4 +24,11 @@ describe('toTransportError', () => {
     expect(transport.message).toContain('gpt-5.1-pro');
     expect(transport.message).toContain('gpt-5-pro');
   });
+
+  test('maps generic API error to api-error with message', () => {
+    const apiError = new FakeApiError('Rate limit exceeded', 'rate_limit_exceeded');
+    const transport = toTransportError(apiError, 'gpt-5.1');
+    expect(transport.reason).toBe('api-error');
+    expect(transport.message).toContain('Rate limit exceeded');
+  });
 });

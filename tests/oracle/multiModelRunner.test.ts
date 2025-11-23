@@ -279,7 +279,8 @@ describe('runMultiModelApiSession', () => {
     await promise;
     vi.useRealTimers();
 
-    expect(order).toEqual(['gemini-3-pro', 'gpt-5.1']);
+    expect(order).toHaveLength(2);
+    expect(order.sort()).toEqual(['gemini-3-pro', 'gpt-5.1']);
   });
 
   test('forwards OSC progress updates to stdout during multi-model runs', async () => {

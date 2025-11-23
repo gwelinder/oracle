@@ -117,9 +117,13 @@ export function toTransportError(error: unknown, model?: string): OracleTranspor
   }
   const isApiError = error instanceof APIError || (error as { name?: string })?.name === 'APIError';
   if (isApiError) {
-    const apiError = error as APIError & { code?: string; error?: { code?: string } };
+    const apiError = error as APIError & { code?: string; error?: { code?: string; message?: string } };
     const code = apiError.code ?? apiError.error?.code;
     const messageText = apiError.message?.toLowerCase?.() ?? '';
+    const apiMessage =
+      apiError.error?.message ||
+      apiError.message ||
+      (apiError.status ? `${apiError.status} OpenAI API error` : 'OpenAI API error');
     // TODO: Remove once gpt-5.1-pro is available via the Responses API.
     if (
       model === 'gpt-5.1-pro' &&
@@ -141,6 +145,7 @@ export function toTransportError(error: unknown, model?: string): OracleTranspor
         apiError,
       );
     }
+    return new OracleTransportError('api-error', apiMessage, apiError);
   }
   return new OracleTransportError(
     'unknown',
@@ -159,6 +164,8 @@ export function describeTransportError(error: OracleTransportError, deadlineMs?:
       return 'Connection to OpenAI ended unexpectedly before the response completed.';
     case 'client-abort':
       return 'Request was aborted before OpenAI completed the response.';
+    case 'api-error':
+      return error.message;
     case 'model-unavailable':
       return error.message;
     case 'unsupported-endpoint':
