@@ -18,7 +18,7 @@ type McporterOutput = { result?: unknown; error?: unknown; sessionId?: string; t
 
 async function runMcporter(args: string[]): Promise<McporterOutput> {
   try {
-    const { stdout } = await execFileAsync('npx', ['-y', 'mcporter', ...args], {
+    const { stdout } = await execFileAsync('pnpm', ['exec', 'mcporter', ...args], {
       env: process.env,
       timeout: 180_000,
     });

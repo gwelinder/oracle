@@ -19,7 +19,7 @@ async function assertBuiltArtifacts(): Promise<void> {
     'lists oracle-local schema',
     async () => {
       await assertBuiltArtifacts();
-      const { stdout } = await execFileAsync('npx', ['-y', 'mcporter', 'list', 'oracle-local', '--schema', '--config', MCP_CONFIG], {
+      const { stdout } = await execFileAsync('pnpm', ['exec', 'mcporter', 'list', 'oracle-local', '--schema', '--config', MCP_CONFIG], {
         env: process.env,
         timeout: 60_000,
       });
@@ -33,9 +33,9 @@ async function assertBuiltArtifacts(): Promise<void> {
     async () => {
       await assertBuiltArtifacts();
       const { stdout } = await execFileAsync(
-        'npx',
+        'pnpm',
         [
-          '-y',
+          'exec',
           'mcporter',
           'call',
           'oracle-local.consult',
