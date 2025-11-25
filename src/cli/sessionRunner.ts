@@ -1,7 +1,12 @@
 import kleur from 'kleur';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { SessionMetadata, SessionMode, BrowserSessionConfig } from '../sessionStore.js';
+import type {
+  SessionMetadata,
+  SessionMode,
+  BrowserSessionConfig,
+  BrowserRuntimeMetadata,
+} from '../sessionStore.js';
 import type { RunOracleOptions, UsageSummary } from '../oracle.js';
 import {
   runOracle,
@@ -92,7 +97,16 @@ export async function performSessionRun({
           startedAt: new Date().toISOString(),
         });
       }
-      const result = await runBrowserSessionExecution({ runOptions, browserConfig, cwd, log }, browserDeps);
+      const runnerDeps = {
+        ...browserDeps,
+        persistRuntimeHint: async (runtime: BrowserRuntimeMetadata) => {
+          await sessionStore.updateSession(sessionMeta.id, {
+            status: 'running',
+            browser: { config: browserConfig, runtime },
+          });
+        },
+      };
+      const result = await runBrowserSessionExecution({ runOptions, browserConfig, cwd, log }, runnerDeps);
       if (modelForStatus) {
         await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
           status: 'completed',
@@ -379,6 +393,29 @@ export async function performSessionRun({
     log(`ERROR: ${message}`);
     markErrorLogged(error);
     const userError = asOracleUserError(error);
+    const connectionLost =
+      userError?.category === 'browser-automation' && (userError.details as { stage?: string } | undefined)?.stage === 'connection-lost';
+    if (connectionLost && mode === 'browser') {
+      const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)?.runtime;
+      log(dim('Chrome disconnected before completion; keeping session running for reattach.'));
+      if (modelForStatus) {
+        await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
+          status: 'running',
+          completedAt: undefined,
+        });
+      }
+      await sessionStore.updateSession(sessionMeta.id, {
+        status: 'running',
+        errorMessage: message,
+        mode,
+        browser: {
+          config: browserConfig,
+          runtime: runtime ?? sessionMeta.browser?.runtime,
+        },
+        response: { status: 'running', incompleteReason: 'chrome-disconnected' },
+      });
+      return;
+    }
     if (userError) {
       log(dim(`User error (${userError.category}): ${userError.message}`));
     }

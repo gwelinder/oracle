@@ -16,6 +16,22 @@ const baseConfig: BrowserSessionConfig = {};
 describe('runBrowserSessionExecution', () => {
   test('logs stats and returns usage/runtime', async () => {
     const log = vi.fn();
+    const persistRuntimeHint = vi.fn();
+    const executeBrowser = vi.fn(async (options) => {
+      await options.runtimeHintCb?.({
+        chromePort: 9999,
+        chromeHost: '127.0.0.1',
+        chromeTargetId: 't-1',
+        tabUrl: 'https://chatgpt.com/c/foo',
+      });
+      return {
+        answerText: 'ok',
+        answerMarkdown: 'ok',
+        tookMs: 1000,
+        answerTokens: 12,
+        answerChars: 20,
+      };
+    });
     const result = await runBrowserSessionExecution(
       {
         runOptions: baseRunOptions,
@@ -32,17 +48,15 @@ describe('runBrowserSessionExecution', () => {
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
         }),
-        executeBrowser: async () => ({
-          answerText: 'ok',
-          answerMarkdown: 'ok',
-          tookMs: 1000,
-          answerTokens: 12,
-          answerChars: 20,
-        }),
+        executeBrowser,
+        persistRuntimeHint,
       },
     );
     expect(result.usage).toEqual({ inputTokens: 42, outputTokens: 12, reasoningTokens: 0, totalTokens: 54 });
     expect(result.runtime).toMatchObject({ chromePid: undefined });
+    expect(persistRuntimeHint).toHaveBeenCalledWith(
+      expect.objectContaining({ chromePort: 9999, chromeHost: '127.0.0.1', chromeTargetId: 't-1' }),
+    );
     expect(log).toHaveBeenCalled();
   });
 

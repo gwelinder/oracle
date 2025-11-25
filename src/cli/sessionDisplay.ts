@@ -13,6 +13,9 @@ import { formatElapsed, formatUSD } from '../oracle/format.js';
 import { MODEL_CONFIGS } from '../oracle.js';
 import { sessionStore, wait } from '../sessionStore.js';
 import { formatTokenCount, formatTokenValue } from '../oracle/runUtils.js';
+import type { BrowserLogger } from '../browser/types.js';
+import { resumeBrowserSession } from '../browser/reattach.js';
+import { estimateTokenCount } from '../browser/utils.js';
 
 const isTty = (): boolean => Boolean(process.stdout.isTTY);
 const dim = (text: string): string => (isTty() ? kleur.dim(text) : text);
@@ -105,7 +108,7 @@ type LiveRenderState = {
 };
 
 export async function attachSession(sessionId: string, options?: AttachSessionOptions): Promise<void> {
-  const metadata = await sessionStore.readSession(sessionId);
+  let metadata = await sessionStore.readSession(sessionId);
   if (!metadata) {
     console.error(chalk.red(`No session found with ID ${sessionId}`));
     process.exitCode = 1;
@@ -125,6 +128,69 @@ export async function attachSession(sessionId: string, options?: AttachSessionOp
   const initialStatus = metadata.status;
   const wantsRender = Boolean(options?.renderMarkdown);
   const isVerbose = Boolean(process.env.ORACLE_VERBOSE_RENDER);
+
+  if (
+    metadata.status === 'running' &&
+    metadata.mode === 'browser' &&
+    metadata.response?.incompleteReason === 'chrome-disconnected' &&
+    metadata.browser?.runtime?.chromePort
+  ) {
+    console.log(chalk.yellow('Attempting to reattach to the existing Chrome session...'));
+    try {
+      const result = await resumeBrowserSession(
+        metadata.browser.runtime,
+        metadata.browser.config,
+        Object.assign(
+          ((message?: string) => {
+            if (message) {
+              console.log(dim(message));
+            }
+          }) as unknown as BrowserLogger,
+          { verbose: true },
+        ),
+      );
+      const outputTokens = estimateTokenCount(result.answerMarkdown);
+      const logWriter = sessionStore.createLogWriter(sessionId);
+      logWriter.logLine('[reattach] captured assistant response from existing Chrome tab');
+      logWriter.logLine('Answer:');
+      logWriter.logLine(result.answerMarkdown || result.answerText);
+      logWriter.stream.end();
+      if (metadata.model) {
+        await sessionStore.updateModelRun(metadata.id, metadata.model, {
+          status: 'completed',
+          usage: {
+            inputTokens: 0,
+            outputTokens,
+            reasoningTokens: 0,
+            totalTokens: outputTokens,
+          },
+          completedAt: new Date().toISOString(),
+        });
+      }
+      await sessionStore.updateSession(sessionId, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+        usage: {
+          inputTokens: 0,
+          outputTokens,
+          reasoningTokens: 0,
+          totalTokens: outputTokens,
+        },
+        browser: {
+          config: metadata.browser.config,
+          runtime: metadata.browser.runtime,
+        },
+        response: { status: 'completed' },
+        error: undefined,
+        transport: undefined,
+      });
+      console.log(chalk.green('Reattach succeeded; session marked completed.'));
+      metadata = (await sessionStore.readSession(sessionId)) ?? metadata;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(chalk.red(`Reattach failed: ${message}`));
+    }
+  }
   if (!options?.suppressMetadata) {
     const reattachLine = buildReattachLine(metadata);
     if (reattachLine) {

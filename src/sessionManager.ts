@@ -39,6 +39,8 @@ export interface BrowserRuntimeMetadata {
   chromePort?: number;
   chromeHost?: string;
   userDataDir?: string;
+  chromeTargetId?: string;
+  tabUrl?: string;
 }
 
 export interface BrowserMetadata {

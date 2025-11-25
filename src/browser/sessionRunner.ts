@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import type { RunOracleOptions } from '../oracle.js';
 import { formatElapsed } from '../oracle.js';
+import { formatTokenCount } from '../oracle/runUtils.js';
 import type { BrowserSessionConfig, BrowserRuntimeMetadata } from '../sessionStore.js';
 import { runBrowserMode } from '../browserMode.js';
 import type { BrowserRunResult } from '../browserMode.js';
@@ -30,6 +31,7 @@ interface RunBrowserSessionArgs {
 export interface BrowserSessionRunnerDeps {
   assemblePrompt?: typeof assembleBrowserPrompt;
   executeBrowser?: typeof runBrowserMode;
+  persistRuntimeHint?: (runtime: BrowserRuntimeMetadata) => Promise<void> | void;
 }
 
 export async function runBrowserSessionExecution(
@@ -85,6 +87,7 @@ export async function runBrowserSessionExecution(
   if (runOptions.verbose) {
     log(chalk.dim('Chrome automation does not stream output; this may take a minute...'));
   }
+  const persistRuntimeHint = deps.persistRuntimeHint ?? (() => {});
   let browserResult: BrowserRunResult;
   try {
     browserResult = await executeBrowser({
@@ -94,6 +97,9 @@ export async function runBrowserSessionExecution(
       log: automationLogger,
       heartbeatIntervalMs: runOptions.heartbeatIntervalMs,
       verbose: runOptions.verbose,
+      runtimeHintCb: async (runtime) => {
+        await persistRuntimeHint(runtime);
+      },
     });
   } catch (error) {
     if (error instanceof BrowserAutomationError) {
@@ -114,7 +120,14 @@ export async function runBrowserSessionExecution(
     reasoningTokens: 0,
     totalTokens: promptArtifacts.estimatedInputTokens + browserResult.answerTokens,
   };
-  const tokensDisplay = `${usage.inputTokens}/${usage.outputTokens}/${usage.reasoningTokens}/${usage.totalTokens}`;
+  const tokensDisplay = [
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.reasoningTokens,
+    usage.totalTokens,
+  ]
+    .map((value) => formatTokenCount(value))
+    .join('/');
   const tokensLabel = runOptions.verbose ? 'tokens (input/output/reasoning/total)' : 'tok(i/o/r/t)';
   const statsParts = [`${runOptions.model}[browser]`, `${tokensLabel}=${tokensDisplay}`];
   if (runOptions.file && runOptions.file.length > 0) {

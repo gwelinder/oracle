@@ -30,6 +30,7 @@ import { estimateTokenCount, withRetries, delay } from './utils.js';
 import { formatElapsed } from '../oracle/format.js';
 import { CHATGPT_URL } from './constants.js';
 import type { LaunchedChrome } from 'chrome-launcher';
+import { BrowserAutomationError } from '../oracle/errors.js';
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from './types.js';
 export { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
@@ -51,6 +52,28 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   if (logger.sessionLog === undefined && options.log?.sessionLog) {
     logger.sessionLog = options.log.sessionLog;
   }
+  const runtimeHintCb = options.runtimeHintCb;
+  let lastTargetId: string | undefined;
+  let lastUrl: string | undefined;
+  const emitRuntimeHint = async (): Promise<void> => {
+    if (!runtimeHintCb || !chrome?.port) {
+      return;
+    }
+    const hint = {
+      chromePid: chrome.pid,
+      chromePort: chrome.port,
+      chromeHost,
+      chromeTargetId: lastTargetId,
+      tabUrl: lastUrl,
+      userDataDir,
+    };
+    try {
+      await runtimeHintCb(hint);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger(`Failed to persist runtime hint: ${message}`);
+    }
+  };
   if (config.debug || process.env.CHATGPT_DEVTOOLS_TRACE === '1') {
     logger(
       `[browser-mode] config: ${JSON.stringify({
@@ -202,6 +225,38 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
     await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
     logger(`Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`);
+    const captureRuntimeSnapshot = async () => {
+      try {
+        if (client?.Target?.getTargetInfo) {
+          const info = await client.Target.getTargetInfo({});
+          lastTargetId = info?.targetInfo?.targetId ?? lastTargetId;
+          lastUrl = info?.targetInfo?.url ?? lastUrl;
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        const { result } = await Runtime.evaluate({
+          expression: 'location.href',
+          returnByValue: true,
+        });
+        if (typeof result?.value === 'string') {
+          lastUrl = result.value;
+        }
+      } catch {
+        // ignore
+      }
+      if (chrome?.port) {
+        const suffix = lastTargetId ? ` target=${lastTargetId}` : '';
+        if (lastUrl) {
+          logger(`[reattach] chrome port=${chrome.port} host=${chromeHost} url=${lastUrl}${suffix}`);
+        } else {
+          logger(`[reattach] chrome port=${chrome.port} host=${chromeHost}${suffix}`);
+        }
+        await emitRuntimeHint();
+      }
+    };
+    await captureRuntimeSnapshot();
     if (config.desiredModel) {
       await raceWithDisconnect(
         withRetries(
@@ -324,6 +379,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       chromePort: chrome.port,
       chromeHost,
       userDataDir,
+      chromeTargetId: lastTargetId,
+      tabUrl: lastUrl,
     };
   } catch (error) {
     const normalizedError = error instanceof Error ? error : new Error(String(error));
@@ -341,9 +398,22 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger(`Chrome window closed before completion: ${normalizedError.message}`);
       logger(normalizedError.stack);
     }
-    throw new Error('Chrome window closed before oracle finished. Please keep it open until completion.', {
-      cause: normalizedError,
-    });
+    await emitRuntimeHint();
+    throw new BrowserAutomationError(
+      'Chrome window closed before oracle finished. Please keep it open until completion.',
+      {
+        stage: 'connection-lost',
+        runtime: {
+          chromePid: chrome.pid,
+          chromePort: chrome.port,
+          chromeHost,
+          userDataDir,
+          chromeTargetId: lastTargetId,
+          tabUrl: lastUrl,
+        },
+      },
+      normalizedError,
+    );
   } finally {
     try {
       if (!connectionClosedUnexpectedly) {
@@ -483,6 +553,22 @@ async function runRemoteBrowserMode(
 
   let client: ChromeClient | null = null;
   let remoteTargetId: string | null = null;
+  let lastUrl: string | undefined;
+  const runtimeHintCb = options.runtimeHintCb;
+  const emitRuntimeHint = async () => {
+    if (!runtimeHintCb) return;
+    try {
+      await runtimeHintCb({
+        chromePort: port,
+        chromeHost: host,
+        chromeTargetId: remoteTargetId ?? undefined,
+        tabUrl: lastUrl,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger(`Failed to persist runtime hint: ${message}`);
+    }
+  };
   const startedAt = Date.now();
   let answerText = '';
   let answerMarkdown = '';
@@ -494,6 +580,7 @@ async function runRemoteBrowserMode(
     const connection = await connectToRemoteChrome(host, port, logger, config.url);
     client = connection.client;
     remoteTargetId = connection.targetId ?? null;
+    await emitRuntimeHint();
     const markConnectionLost = () => {
       connectionClosedUnexpectedly = true;
     };
@@ -514,6 +601,18 @@ async function runRemoteBrowserMode(
     await ensureLoggedIn(Runtime, logger, { remoteSession: true });
     await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
     logger(`Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`);
+    try {
+      const { result } = await Runtime.evaluate({
+        expression: 'location.href',
+        returnByValue: true,
+      });
+      if (typeof result?.value === 'string') {
+        lastUrl = result.value;
+      }
+      await emitRuntimeHint();
+    } catch {
+      // ignore
+    }
 
     if (config.desiredModel) {
       await withRetries(
@@ -591,6 +690,8 @@ async function runRemoteBrowserMode(
       chromePort: port,
       chromeHost: host,
       userDataDir: undefined,
+      chromeTargetId: remoteTargetId ?? undefined,
+      tabUrl: lastUrl,
     };
   } catch (error) {
     const normalizedError = error instanceof Error ? error : new Error(String(error));
@@ -606,8 +707,14 @@ async function runRemoteBrowserMode(
       throw normalizedError;
     }
 
-    throw new Error('Remote Chrome connection lost before Oracle finished.', {
-      cause: normalizedError,
+    throw new BrowserAutomationError('Remote Chrome connection lost before Oracle finished.', {
+      stage: 'connection-lost',
+      runtime: {
+        chromeHost: host,
+        chromePort: port,
+        chromeTargetId: remoteTargetId ?? undefined,
+        tabUrl: lastUrl,
+      },
     });
   } finally {
     try {

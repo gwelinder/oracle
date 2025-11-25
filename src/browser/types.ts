@@ -1,5 +1,6 @@
 import type CDP from 'chrome-remote-interface';
 import type Protocol from 'devtools-protocol';
+import type { BrowserRuntimeMetadata } from '../sessionStore.js';
 
 export type ChromeClient = Awaited<ReturnType<typeof CDP>>;
 export type CookieParam = Protocol.Network.CookieParam;
@@ -66,6 +67,8 @@ export interface BrowserRunOptions {
   log?: BrowserLogger;
   heartbeatIntervalMs?: number;
   verbose?: boolean;
+  /** Optional hook to persist runtime info (port/url/target) as soon as Chrome is ready. */
+  runtimeHintCb?: (hint: BrowserRuntimeMetadata) => void | Promise<void>;
 }
 
 export interface BrowserRunResult {
@@ -79,6 +82,8 @@ export interface BrowserRunResult {
   chromePort?: number;
   chromeHost?: string;
   userDataDir?: string;
+  chromeTargetId?: string;
+  tabUrl?: string;
 }
 
 export type ResolvedBrowserConfig = Required<
