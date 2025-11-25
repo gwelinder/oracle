@@ -49,7 +49,7 @@ kill "$runner_pid" 2>/dev/null || true
 wait "$runner_pid" 2>/dev/null || true
 
 reattach_log="$(mktemp -t oracle-browser-reattach-log)"
-if ! node "$ROOT/dist/bin/oracle-cli.js" session "$slug" --render-plain --no-notify >"$reattach_log" 2>&1; then
+if ! node "$ROOT/dist/bin/oracle-cli.js" session "$slug" --render-plain >"$reattach_log" 2>&1; then
   echo "[browser-smoke] reattach: session command failed"
   cat "$reattach_log"
   exit 1
