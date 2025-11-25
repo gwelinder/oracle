@@ -1,6 +1,7 @@
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -31,6 +32,22 @@ interface RemoteServerInstance {
   port: number;
   token: string;
   close(): Promise<void>;
+}
+
+async function findAvailablePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const srv = net.createServer();
+    srv.on('error', (err) => reject(err));
+    srv.listen(0, () => {
+      const address = srv.address();
+      if (typeof address === 'object' && address?.port) {
+        const port = address.port;
+        srv.close(() => resolve(port));
+      } else {
+        srv.close(() => reject(new Error('Unable to allocate port')));
+      }
+    });
+  });
 }
 
 export async function createRemoteServer(
@@ -465,17 +482,45 @@ async function launchManualLoginChrome(profileDir: string, url: string, logger: 
       );
     }
   }, timeoutMs);
+
   try {
     const chromeLauncher = await import('chrome-launcher');
     const { launch } = chromeLauncher;
-    await launch({
+    const debugPort = await findAvailablePort();
+    logger(`Planned manual-login Chrome DevTools port: ${debugPort}`);
+    const chrome = await launch({
+      // Expose DevTools so later runs can attach instead of spawning a second Chrome.
+      // Use a per-serve free port so the login window stays stable for all runs.
+      port: debugPort,
       userDataDir: profileDir,
       startingUrl: url,
-      chromeFlags: ['--no-first-run', '--no-default-browser-check', `--user-data-dir=${profileDir}`],
+      chromeFlags: [
+        '--no-first-run',
+        '--no-default-browser-check',
+        `--user-data-dir=${profileDir}`,
+        '--remote-allow-origins=*',
+        `--remote-debugging-port=${debugPort}`, // ensure DevToolsActivePort is written even on Windows
+      ],
     });
+
+    const chosenPort = chrome?.port ?? debugPort ?? null;
+    if (chosenPort) {
+      // Write DevToolsActivePort eagerly so maybeReuseRunningChrome can attach on the next run
+      const devtoolsFile = path.join(profileDir, 'DevToolsActivePort');
+      const devtoolsFileDefault = path.join(profileDir, 'Default', 'DevToolsActivePort');
+      const contents = `${chosenPort}\n/devtools/browser`;
+      await writeFile(devtoolsFile, contents).catch(() => undefined);
+      await writeFile(devtoolsFileDefault, contents).catch(() => undefined);
+      logger(`Manual-login Chrome DevTools port: ${chosenPort}`);
+      logger(`If needed, DevTools JSON at http://127.0.0.1:${chosenPort}/json/version`);
+    } else {
+      logger('Warning: unable to determine manual-login Chrome DevTools port. Remote runs may fail to attach.');
+    }
+
     finished = true;
     clearTimeout(timeout);
-    logger(`Opened Chrome with manual-login profile at ${profileDir}. Complete login, then rerun remote sessions.`);
+    const portInfo = chosenPort ? ` (DevTools port ${chosenPort})` : '';
+    logger(`Opened Chrome with manual-login profile at ${profileDir}${portInfo}. Complete login, then rerun remote sessions.`);
   } catch (error) {
     finished = true;
     clearTimeout(timeout);
