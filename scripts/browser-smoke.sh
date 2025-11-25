@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CMD=(node "$ROOT/dist/bin/oracle-cli.js" --engine browser --browser-headless --wait --heartbeat 0 --timeout 900 --browser-input-timeout 120000)
 
-tmpfile="$(mktemp "${TMPDIR:-/tmp}/oracle-browser-smoke-XXXXXX.txt")"
+tmpfile="$(mktemp -t oracle-browser-smoke)"
 echo "smoke-attachment" >"$tmpfile"
 
 echo "[browser-smoke] pro simple"
@@ -22,7 +22,7 @@ echo "[browser-smoke] standard markdown check"
 echo "[browser-smoke] reattach flow after controller loss"
 slug="browser-reattach-smoke"
 meta="$HOME/.oracle/sessions/$slug/meta.json"
-logfile="$(mktemp "${TMPDIR:-/tmp}/oracle-browser-reattach-XXXXXX.txt")"
+logfile="$(mktemp -t oracle-browser-reattach)"
 
 # Start a browser run in the background and wait for runtime hints to appear.
 "${CMD[@]}" --model gpt-5.1-pro --prompt "Return exactly 'reattach-ok'." --slug "$slug" --browser-keep-browser --heartbeat 0 --timeout 900 >"$logfile" 2>&1 &
@@ -48,7 +48,7 @@ fi
 kill "$runner_pid" 2>/dev/null || true
 wait "$runner_pid" 2>/dev/null || true
 
-reattach_log="$(mktemp "${TMPDIR:-/tmp}/oracle-browser-reattach-log-XXXXXX.txt")"
+reattach_log="$(mktemp -t oracle-browser-reattach-log)"
 if ! node "$ROOT/dist/bin/oracle-cli.js" session "$slug" --render-plain --no-notify >"$reattach_log" 2>&1; then
   echo "[browser-smoke] reattach: session command failed"
   cat "$reattach_log"
