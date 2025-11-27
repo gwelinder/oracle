@@ -311,6 +311,9 @@ export async function runOracle(
   const headerModelLabel = richTty
     ? chalk.cyan(modelConfig.model)
     : modelConfig.model;
+  // OpenRouter/fal.ai don't support the store parameter
+  const isOpenRouterCompatible =
+    isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl);
   const requestBody = buildRequestBody({
     modelConfig,
     systemPrompt,
@@ -318,7 +321,7 @@ export async function runOracle(
     searchEnabled,
     maxOutputTokens: options.maxOutput,
     background: useBackground,
-    storeResponse: useBackground,
+    storeResponse: useBackground && !isOpenRouterCompatible,
   });
   const estimatedInputTokens = estimateRequestTokens(requestBody, modelConfig);
   const tokenLabel = formatTokenEstimate(estimatedInputTokens, (text) =>
