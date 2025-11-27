@@ -2,12 +2,20 @@ import { InvalidArgumentError, type Command } from 'commander';
 import type { ModelName, PreviewMode } from '../oracle.js';
 import { DEFAULT_MODEL, MODEL_CONFIGS } from '../oracle.js';
 
-export function collectPaths(value: string | string[] | undefined, previous: string[] = []): string[] {
+export function collectPaths(
+  value: string | string[] | undefined,
+  previous: string[] = []
+): string[] {
   if (!value) {
     return previous;
   }
   const nextValues = Array.isArray(value) ? value : [value];
-  return previous.concat(nextValues.flatMap((entry) => entry.split(',')).map((entry) => entry.trim()).filter(Boolean));
+  return previous.concat(
+    nextValues
+      .flatMap((entry) => entry.split(','))
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
 }
 
 /**
@@ -18,7 +26,7 @@ export function mergePathLikeOptions(
   include?: string[],
   filesAlias?: string[],
   pathAlias?: string[],
-  pathsAlias?: string[],
+  pathsAlias?: string[]
 ): string[] {
   const withFile = collectPaths(file, []);
   const withInclude = collectPaths(include, withFile);
@@ -27,7 +35,10 @@ export function mergePathLikeOptions(
   return collectPaths(pathsAlias, withPathAlias);
 }
 
-export function collectModelList(value: string, previous: string[] = []): string[] {
+export function collectModelList(
+  value: string,
+  previous: string[] = []
+): string[] {
   if (!value) {
     return previous;
   }
@@ -57,13 +68,17 @@ export function parseIntOption(value: string | undefined): number | undefined {
   return parsed;
 }
 
-export function parseHeartbeatOption(value: string | number | undefined): number {
+export function parseHeartbeatOption(
+  value: string | number | undefined
+): number {
   if (value == null) {
     return 30;
   }
   if (typeof value === 'number') {
     if (Number.isNaN(value) || value < 0) {
-      throw new InvalidArgumentError('Heartbeat interval must be zero or a positive number.');
+      throw new InvalidArgumentError(
+        'Heartbeat interval must be zero or a positive number.'
+      );
     }
     return value;
   }
@@ -76,7 +91,9 @@ export function parseHeartbeatOption(value: string | number | undefined): number
   }
   const parsed = Number.parseFloat(normalized);
   if (Number.isNaN(parsed) || parsed < 0) {
-    throw new InvalidArgumentError('Heartbeat interval must be zero or a positive number.');
+    throw new InvalidArgumentError(
+      'Heartbeat interval must be zero or a positive number.'
+    );
   }
   return parsed;
 }
@@ -85,10 +102,16 @@ export function usesDefaultStatusFilters(cmd: Command): boolean {
   const hoursSource = cmd.getOptionValueSource?.('hours') ?? 'default';
   const limitSource = cmd.getOptionValueSource?.('limit') ?? 'default';
   const allSource = cmd.getOptionValueSource?.('all') ?? 'default';
-  return hoursSource === 'default' && limitSource === 'default' && allSource === 'default';
+  return (
+    hoursSource === 'default' &&
+    limitSource === 'default' &&
+    allSource === 'default'
+  );
 }
 
-export function resolvePreviewMode(value: boolean | string | undefined): PreviewMode | undefined {
+export function resolvePreviewMode(
+  value: boolean | string | undefined
+): PreviewMode | undefined {
   if (typeof value === 'string' && value.length > 0) {
     return value as PreviewMode;
   }
@@ -113,24 +136,34 @@ export function normalizeModelOption(value: string | undefined): string {
   return (value ?? '').trim();
 }
 
-export function normalizeBaseUrl(value: string | undefined): string | undefined {
+export function normalizeBaseUrl(
+  value: string | undefined
+): string | undefined {
   const trimmed = value?.trim();
   return trimmed?.length ? trimmed : undefined;
 }
 
-export function parseTimeoutOption(value: string | undefined): number | 'auto' | undefined {
+export function parseTimeoutOption(
+  value: string | undefined
+): number | 'auto' | undefined {
   if (value == null) return undefined;
   const normalized = value.trim().toLowerCase();
   if (normalized === 'auto') return 'auto';
   const parsed = Number.parseFloat(normalized);
   if (Number.isNaN(parsed) || parsed <= 0) {
-    throw new InvalidArgumentError('Timeout must be a positive number of seconds or "auto".');
+    throw new InvalidArgumentError(
+      'Timeout must be a positive number of seconds or "auto".'
+    );
   }
   return parsed;
 }
 
 export function resolveApiModel(modelValue: string): ModelName {
   const normalized = normalizeModelOption(modelValue).toLowerCase();
+  // Pass through full OpenRouter model IDs (containing provider prefix like "google/", "openai/", etc.)
+  if (normalized.includes('/')) {
+    return normalized as ModelName;
+  }
   if (normalized in MODEL_CONFIGS) {
     return normalized as ModelName;
   }
@@ -143,13 +176,21 @@ export function resolveApiModel(modelValue: string): ModelName {
   if (normalized.includes('claude') && normalized.includes('opus')) {
     return 'claude-4.1-opus';
   }
-  if (normalized === 'claude' || normalized === 'sonnet' || /(^|\b)sonnet(\b|$)/.test(normalized)) {
+  if (
+    normalized === 'claude' ||
+    normalized === 'sonnet' ||
+    /(^|\b)sonnet(\b|$)/.test(normalized)
+  ) {
     return 'claude-4.5-sonnet';
   }
   if (normalized === 'opus' || normalized === 'claude-4.1') {
     return 'claude-4.1-opus';
   }
-  if (normalized.includes('5.0') || normalized === 'gpt-5-pro' || normalized === 'gpt-5') {
+  if (
+    normalized.includes('5.0') ||
+    normalized === 'gpt-5-pro' ||
+    normalized === 'gpt-5'
+  ) {
     return 'gpt-5-pro';
   }
   if (normalized.includes('5-pro') && !normalized.includes('5.1')) {
@@ -160,7 +201,9 @@ export function resolveApiModel(modelValue: string): ModelName {
   }
   if (normalized.includes('codex')) {
     if (normalized.includes('max')) {
-      throw new InvalidArgumentError('gpt-5.1-codex-max is not available yet. OpenAI has not released the API.');
+      throw new InvalidArgumentError(
+        'gpt-5.1-codex-max is not available yet. OpenAI has not released the API.'
+      );
     }
     return 'gpt-5.1-codex';
   }
@@ -191,7 +234,11 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   if (normalized.includes('5.0') || normalized.includes('5-pro')) {
     return 'gpt-5-pro';
   }
-  if (normalized.includes('gpt-5') && normalized.includes('pro') && !normalized.includes('5.1')) {
+  if (
+    normalized.includes('gpt-5') &&
+    normalized.includes('pro') &&
+    !normalized.includes('5.1')
+  ) {
     return 'gpt-5-pro';
   }
   if (normalized.includes('codex')) {
@@ -203,7 +250,10 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   if (normalized.includes('classic')) {
     return 'gpt-5.1-pro';
   }
-  if ((normalized.includes('5.1') || normalized.includes('5_1')) && normalized.includes('pro')) {
+  if (
+    (normalized.includes('5.1') || normalized.includes('5_1')) &&
+    normalized.includes('pro')
+  ) {
     return 'gpt-5.1-pro';
   }
   if (normalized.includes('pro')) {
@@ -212,7 +262,11 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   if (normalized.includes('5.1') || normalized.includes('5_1')) {
     return 'gpt-5.1';
   }
-  if (normalized.includes('instant') || normalized.includes('thinking') || normalized.includes('fast')) {
+  if (
+    normalized.includes('instant') ||
+    normalized.includes('thinking') ||
+    normalized.includes('fast')
+  ) {
     return 'gpt-5.1';
   }
   return 'gpt-5.1';

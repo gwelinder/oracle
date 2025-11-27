@@ -251,7 +251,11 @@ export async function runOracle(
     openRouterApiKey: resolverOpenRouterApiKey,
   });
   const isLongRunningModel = isProTierModel;
-  const supportsBackground = modelConfig.supportsBackground !== false;
+  // OpenRouter/fal.ai don't support background mode (no retrieve endpoint)
+  const isOpenRouterCompatible =
+    isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl);
+  const supportsBackground =
+    modelConfig.supportsBackground !== false && !isOpenRouterCompatible;
   const useBackground = supportsBackground
     ? (options.background ?? isLongRunningModel)
     : false;
@@ -312,8 +316,6 @@ export async function runOracle(
     ? chalk.cyan(modelConfig.model)
     : modelConfig.model;
   // OpenRouter/fal.ai don't support the store parameter
-  const isOpenRouterCompatible =
-    isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl);
   const requestBody = buildRequestBody({
     modelConfig,
     systemPrompt,
@@ -417,24 +419,32 @@ export async function runOracle(
     };
   }
 
-  const apiEndpoint = modelConfig.model.startsWith('gemini')
-    ? undefined
-    : isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl)
+  // When using fal.ai or OpenRouter, always use that endpoint (even for gemini/claude models)
+  const apiEndpoint =
+    isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl)
       ? baseUrl
-      : modelConfig.model.startsWith('claude')
-        ? (process.env.ANTHROPIC_BASE_URL ?? baseUrl)
-        : baseUrl;
+      : modelConfig.model.startsWith('gemini')
+        ? undefined
+        : modelConfig.model.startsWith('claude')
+          ? (process.env.ANTHROPIC_BASE_URL ?? baseUrl)
+          : baseUrl;
+  // When using OpenRouter/fal.ai, use model ID as-is; otherwise resolve for native APIs
+  const useOpenRouterEndpoint =
+    isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl);
+  const resolvedModelId = useOpenRouterEndpoint
+    ? effectiveModelId
+    : modelConfig.model.startsWith('claude')
+      ? resolveClaudeModelId(effectiveModelId)
+      : modelConfig.model.startsWith('gemini')
+        ? resolveGeminiModelId(effectiveModelId as ModelName)
+        : effectiveModelId;
   const clientInstance: ClientLike =
     client ??
     clientFactory(apiKey, {
       baseUrl: apiEndpoint,
       azure: options.azure,
       model: options.model,
-      resolvedModelId: modelConfig.model.startsWith('claude')
-        ? resolveClaudeModelId(effectiveModelId)
-        : modelConfig.model.startsWith('gemini')
-          ? resolveGeminiModelId(effectiveModelId as ModelName)
-          : effectiveModelId,
+      resolvedModelId,
     });
   logVerbose('Dispatching request to API...');
   if (options.verbose) {
