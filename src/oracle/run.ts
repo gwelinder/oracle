@@ -13,7 +13,11 @@ import type {
   RunOracleResult,
   ModelName,
 } from './types.js';
-import { DEFAULT_SYSTEM_PROMPT, MODEL_CONFIGS, TOKENIZER_OPTIONS } from './config.js';
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  MODEL_CONFIGS,
+  TOKENIZER_OPTIONS,
+} from './config.js';
 import { readFiles } from './files.js';
 import { buildPrompt, buildRequestBody } from './request.js';
 import { estimateRequestTokens } from './tokenEstimate.js';
@@ -35,11 +39,16 @@ import { resolveGeminiModelId } from './gemini.js';
 import { resolveClaudeModelId } from './claude.js';
 import { renderMarkdownAnsi } from '../cli/markdownRenderer.js';
 import { executeBackgroundResponse } from './background.js';
-import { formatTokenEstimate, formatTokenValue, resolvePreviewMode } from './runUtils.js';
+import {
+  formatTokenEstimate,
+  formatTokenValue,
+  resolvePreviewMode,
+} from './runUtils.js';
 import {
   defaultOpenRouterBaseUrl,
   isKnownModel,
   isOpenRouterBaseUrl,
+  isFalAiBaseUrl,
   isProModel,
   resolveModelConfig,
   normalizeOpenRouterBaseUrl,
@@ -56,7 +65,10 @@ const defaultWait = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps = {}): Promise<RunOracleResult> {
+export async function runOracle(
+  options: RunOracleOptions,
+  deps: RunOracleDeps = {}
+): Promise<RunOracleResult> {
   const {
     apiKey: optionsApiKey = options.apiKey,
     cwd = process.cwd(),
@@ -71,22 +83,28 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     wait = defaultWait,
   } = deps;
   const stdoutWrite = allowStdout
-    ? stdoutWriteDep ?? process.stdout.write.bind(process.stdout)
+    ? (stdoutWriteDep ?? process.stdout.write.bind(process.stdout))
     : () => true;
   const isTty = allowStdout && isStdoutTty;
-  const resolvedXaiBaseUrl = process.env.XAI_BASE_URL?.trim() || 'https://api.x.ai/v1';
+  const resolvedXaiBaseUrl =
+    process.env.XAI_BASE_URL?.trim() || 'https://api.x.ai/v1';
   const openRouterApiKey = process.env.OPENROUTER_API_KEY?.trim();
+  const falApiKey = process.env.FAL_KEY?.trim();
   const defaultOpenRouterBase = defaultOpenRouterBaseUrl();
 
-  const knownModelConfig = isKnownModel(options.model) ? MODEL_CONFIGS[options.model] : undefined;
+  const knownModelConfig = isKnownModel(options.model)
+    ? MODEL_CONFIGS[options.model]
+    : undefined;
   const provider = knownModelConfig?.provider ?? 'other';
 
   const hasOpenAIKey =
     Boolean(optionsApiKey) ||
     Boolean(process.env.OPENAI_API_KEY) ||
     Boolean(process.env.AZURE_OPENAI_API_KEY && options.azure?.endpoint);
-  const hasAnthropicKey = Boolean(optionsApiKey) || Boolean(process.env.ANTHROPIC_API_KEY);
-  const hasGeminiKey = Boolean(optionsApiKey) || Boolean(process.env.GEMINI_API_KEY);
+  const hasAnthropicKey =
+    Boolean(optionsApiKey) || Boolean(process.env.ANTHROPIC_API_KEY);
+  const hasGeminiKey =
+    Boolean(optionsApiKey) || Boolean(process.env.GEMINI_API_KEY);
   const hasXaiKey = Boolean(optionsApiKey) || Boolean(process.env.XAI_API_KEY);
 
   let baseUrl = options.baseUrl?.trim();
@@ -121,78 +139,122 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     }
   };
 
-  const previewMode = resolvePreviewMode(options.previewMode ?? options.preview);
+  const previewMode = resolvePreviewMode(
+    options.previewMode ?? options.preview
+  );
   const isPreview = Boolean(previewMode);
 
   const isAzureOpenAI = Boolean(options.azure?.endpoint);
 
-  const getApiKeyForModel = (model: ModelName): { key?: string; source: string } => {
+  const getApiKeyForModel = (
+    model: ModelName
+  ): { key?: string; source: string } => {
+    if (isFalAiBaseUrl(baseUrl)) {
+      return {
+        key: optionsApiKey ?? falApiKey,
+        source: 'FAL_KEY',
+      };
+    }
     if (isOpenRouterBaseUrl(baseUrl) || openRouterFallback) {
-      return { key: optionsApiKey ?? openRouterApiKey, source: 'OPENROUTER_API_KEY' };
+      return {
+        key: optionsApiKey ?? openRouterApiKey,
+        source: 'OPENROUTER_API_KEY',
+      };
     }
     if (typeof model === 'string' && model.startsWith('gpt')) {
       if (optionsApiKey) return { key: optionsApiKey, source: 'apiKey option' };
       if (isAzureOpenAI) {
-        const key = process.env.AZURE_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;
+        const key =
+          process.env.AZURE_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;
         return { key, source: 'AZURE_OPENAI_API_KEY|OPENAI_API_KEY' };
       }
       return { key: process.env.OPENAI_API_KEY, source: 'OPENAI_API_KEY' };
     }
     if (typeof model === 'string' && model.startsWith('gemini')) {
-      return { key: optionsApiKey ?? process.env.GEMINI_API_KEY, source: 'GEMINI_API_KEY' };
+      return {
+        key: optionsApiKey ?? process.env.GEMINI_API_KEY,
+        source: 'GEMINI_API_KEY',
+      };
     }
     if (typeof model === 'string' && model.startsWith('claude')) {
-      return { key: optionsApiKey ?? process.env.ANTHROPIC_API_KEY, source: 'ANTHROPIC_API_KEY' };
+      return {
+        key: optionsApiKey ?? process.env.ANTHROPIC_API_KEY,
+        source: 'ANTHROPIC_API_KEY',
+      };
     }
     if (typeof model === 'string' && model.startsWith('grok')) {
-      return { key: optionsApiKey ?? process.env.XAI_API_KEY, source: 'XAI_API_KEY' };
+      return {
+        key: optionsApiKey ?? process.env.XAI_API_KEY,
+        source: 'XAI_API_KEY',
+      };
     }
-    return { key: optionsApiKey ?? openRouterApiKey, source: optionsApiKey ? 'apiKey option' : 'OPENROUTER_API_KEY' };
+    return {
+      key: optionsApiKey ?? openRouterApiKey,
+      source: optionsApiKey ? 'apiKey option' : 'OPENROUTER_API_KEY',
+    };
   };
 
   const apiKeyResult = getApiKeyForModel(options.model);
   const apiKey = apiKeyResult.key;
   if (!apiKey) {
-    const envVar = isOpenRouterBaseUrl(baseUrl) || openRouterFallback
-      ? 'OPENROUTER_API_KEY'
-      : options.model.startsWith('gpt')
-        ? isAzureOpenAI
-          ? 'AZURE_OPENAI_API_KEY (or OPENAI_API_KEY)'
-          : 'OPENAI_API_KEY'
-        : options.model.startsWith('gemini')
-          ? 'GEMINI_API_KEY'
-          : options.model.startsWith('claude')
-            ? 'ANTHROPIC_API_KEY'
-            : options.model.startsWith('grok')
-              ? 'XAI_API_KEY'
-              : 'OPENROUTER_API_KEY';
-    throw new PromptValidationError(`Missing ${envVar}. Set it via the environment or a .env file.`, {
-      env: envVar,
-    });
+    const envVar = isFalAiBaseUrl(baseUrl)
+      ? 'FAL_KEY'
+      : isOpenRouterBaseUrl(baseUrl) || openRouterFallback
+        ? 'OPENROUTER_API_KEY'
+        : options.model.startsWith('gpt')
+          ? isAzureOpenAI
+            ? 'AZURE_OPENAI_API_KEY (or OPENAI_API_KEY)'
+            : 'OPENAI_API_KEY'
+          : options.model.startsWith('gemini')
+            ? 'GEMINI_API_KEY'
+            : options.model.startsWith('claude')
+              ? 'ANTHROPIC_API_KEY'
+              : options.model.startsWith('grok')
+                ? 'XAI_API_KEY'
+                : 'OPENROUTER_API_KEY';
+    throw new PromptValidationError(
+      `Missing ${envVar}. Set it via the environment or a .env file.`,
+      {
+        env: envVar,
+      }
+    );
   }
 
   const envVar = apiKeyResult.source;
 
-  const minPromptLength = Number.parseInt(process.env.ORACLE_MIN_PROMPT_CHARS ?? '10', 10);
+  const minPromptLength = Number.parseInt(
+    process.env.ORACLE_MIN_PROMPT_CHARS ?? '10',
+    10
+  );
   const promptLength = options.prompt?.trim().length ?? 0;
   // Enforce the short-prompt guardrail on pro-tier models because they're costly; cheaper models can run short prompts without blocking.
   const isProTierModel = isProModel(options.model);
-  if (isProTierModel && !Number.isNaN(minPromptLength) && promptLength < minPromptLength) {
+  if (
+    isProTierModel &&
+    !Number.isNaN(minPromptLength) &&
+    promptLength < minPromptLength
+  ) {
     throw new PromptValidationError(
       `Prompt is too short (<${minPromptLength} chars). This was likely accidental; please provide more detail.`,
-      { minPromptLength, promptLength },
+      { minPromptLength, promptLength }
     );
   }
 
   const resolverOpenRouterApiKey =
-    openRouterFallback || isOpenRouterBaseUrl(baseUrl) ? openRouterApiKey ?? apiKey : undefined;
+    openRouterFallback ||
+    isOpenRouterBaseUrl(baseUrl) ||
+    isFalAiBaseUrl(baseUrl)
+      ? (openRouterApiKey ?? apiKey)
+      : undefined;
   const modelConfig = await resolveModelConfig(options.model, {
     baseUrl,
     openRouterApiKey: resolverOpenRouterApiKey,
   });
   const isLongRunningModel = isProTierModel;
   const supportsBackground = modelConfig.supportsBackground !== false;
-  const useBackground = supportsBackground ? options.background ?? isLongRunningModel : false;
+  const useBackground = supportsBackground
+    ? (options.background ?? isLongRunningModel)
+    : false;
 
   const inputTokenBudget = options.maxInput ?? modelConfig.inputLimit;
   const files = await readFiles(options.file ?? [], { cwd, fsModule });
@@ -245,8 +307,10 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     options.effectiveModelId ??
     (options.model.startsWith('gemini')
       ? resolveGeminiModelId(options.model)
-      : modelConfig.apiModel ?? modelConfig.model);
-  const headerModelLabel = richTty ? chalk.cyan(modelConfig.model) : modelConfig.model;
+      : (modelConfig.apiModel ?? modelConfig.model));
+  const headerModelLabel = richTty
+    ? chalk.cyan(modelConfig.model)
+    : modelConfig.model;
   const requestBody = buildRequestBody({
     modelConfig,
     systemPrompt,
@@ -257,15 +321,17 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     storeResponse: useBackground,
   });
   const estimatedInputTokens = estimateRequestTokens(requestBody, modelConfig);
-  const tokenLabel = formatTokenEstimate(
-    estimatedInputTokens,
-    (text) => (richTty ? chalk.green(text) : text),
+  const tokenLabel = formatTokenEstimate(estimatedInputTokens, (text) =>
+    richTty ? chalk.green(text) : text
   );
-  const fileLabel = richTty ? chalk.magenta(fileCount.toString()) : fileCount.toString();
+  const fileLabel = richTty
+    ? chalk.magenta(fileCount.toString())
+    : fileCount.toString();
   const filesPhrase = fileCount === 0 ? 'no files' : `${fileLabel} files`;
   const headerLine = `Calling ${headerModelLabel} — ${tokenLabel} tokens, ${filesPhrase}.`;
   const shouldReportFiles =
-    (options.filesReport || fileTokenInfo.totalTokens > inputTokenBudget) && fileTokenInfo.stats.length > 0;
+    (options.filesReport || fileTokenInfo.totalTokens > inputTokenBudget) &&
+    fileTokenInfo.stats.length > 0;
   if (!isPreview) {
     if (!options.suppressHeader) {
       log(headerLine);
@@ -273,14 +339,24 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     const maskedKey = maskApiKey(apiKey);
     if (maskedKey && options.verbose) {
       const resolvedSuffix =
-        effectiveModelId !== modelConfig.model ? ` (resolved: ${effectiveModelId})` : '';
-      log(dim(`Using ${envVar}=${maskedKey} for model ${modelConfig.model}${resolvedSuffix}`));
+        effectiveModelId !== modelConfig.model
+          ? ` (resolved: ${effectiveModelId})`
+          : '';
+      log(
+        dim(
+          `Using ${envVar}=${maskedKey} for model ${modelConfig.model}${resolvedSuffix}`
+        )
+      );
     }
     if (baseUrl) {
       log(dim(`Base URL: ${formatBaseUrlForLog(baseUrl)}`));
     }
     if (options.background && !supportsBackground) {
-      log(dim('Background runs are not supported for this model; streaming in foreground instead.'));
+      log(
+        dim(
+          'Background runs are not supported for this model; streaming in foreground instead.'
+        )
+      );
     }
     if (!options.suppressTips) {
       if (pendingNoFilesTip) {
@@ -291,7 +367,11 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
       }
     }
     if (isLongRunningModel) {
-      log(dim('This model can take up to 60 minutes (usually replies much faster).'));
+      log(
+        dim(
+          'This model can take up to 60 minutes (usually replies much faster).'
+        )
+      );
     }
     if (options.verbose || isLongRunningModel) {
       log(dim('Press Ctrl+C to cancel.'));
@@ -303,11 +383,13 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   if (estimatedInputTokens > inputTokenBudget) {
     throw new PromptValidationError(
       `Input too large (${estimatedInputTokens.toLocaleString()} tokens). Limit is ${inputTokenBudget.toLocaleString()} tokens.`,
-      { estimatedInputTokens, inputTokenBudget },
+      { estimatedInputTokens, inputTokenBudget }
     );
   }
 
-  logVerbose(`Estimated tokens (request body): ${estimatedInputTokens.toLocaleString()}`);
+  logVerbose(
+    `Estimated tokens (request body): ${estimatedInputTokens.toLocaleString()}`
+  );
 
   if (isPreview && previewMode) {
     if (previewMode === 'json' || previewMode === 'full') {
@@ -321,7 +403,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
       log('');
     }
     log(
-      `Estimated input tokens: ${estimatedInputTokens.toLocaleString()} / ${inputTokenBudget.toLocaleString()} (model: ${modelConfig.model})`,
+      `Estimated input tokens: ${estimatedInputTokens.toLocaleString()} / ${inputTokenBudget.toLocaleString()} (model: ${modelConfig.model})`
     );
     return {
       mode: 'preview',
@@ -334,10 +416,10 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
 
   const apiEndpoint = modelConfig.model.startsWith('gemini')
     ? undefined
-    : isOpenRouterBaseUrl(baseUrl)
+    : isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl)
       ? baseUrl
       : modelConfig.model.startsWith('claude')
-        ? process.env.ANTHROPIC_BASE_URL ?? baseUrl
+        ? (process.env.ANTHROPIC_BASE_URL ?? baseUrl)
         : baseUrl;
   const clientInstance: ClientLike =
     client ??
@@ -375,7 +457,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     if (timeoutExceeded()) {
       throw new OracleTransportError(
         'client-timeout',
-        `Timed out waiting for API response after ${formatElapsed(timeoutMs)}.`,
+        `Timed out waiting for API response after ${formatElapsed(timeoutMs)}.`
       );
     }
   };
@@ -406,7 +488,10 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
       try {
         stream = await clientInstance.responses.stream(requestBody);
       } catch (streamInitError) {
-        const transportError = toTransportError(streamInitError, requestBody.model);
+        const transportError = toTransportError(
+          streamInitError,
+          requestBody.model
+        );
         log(chalk.yellow(describeTransportError(transportError, timeoutMs)));
         throw transportError;
       }
@@ -420,28 +505,29 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
         stopHeartbeat?.();
         stopHeartbeat = null;
       };
-        if (options.heartbeatIntervalMs && options.heartbeatIntervalMs > 0) {
-          heartbeatActive = true;
-          stopHeartbeat = startHeartbeat({
-            intervalMs: options.heartbeatIntervalMs,
-            log: (message) => log(message),
-            isActive: () => heartbeatActive,
-            makeMessage: (elapsedMs) => {
-              const elapsedText = formatElapsed(elapsedMs);
-              const remainingMs = Math.max(timeoutMs - elapsedMs, 0);
-              const remainingLabel =
-                remainingMs >= 60_000
-                  ? `${Math.ceil(remainingMs / 60_000)} min`
-                  : `${Math.max(1, Math.ceil(remainingMs / 1000))}s`;
-              return `API connection active — ${elapsedText} elapsed. Timeout in ~${remainingLabel} if no response.`;
-            },
-          });
-        }
+      if (options.heartbeatIntervalMs && options.heartbeatIntervalMs > 0) {
+        heartbeatActive = true;
+        stopHeartbeat = startHeartbeat({
+          intervalMs: options.heartbeatIntervalMs,
+          log: (message) => log(message),
+          isActive: () => heartbeatActive,
+          makeMessage: (elapsedMs) => {
+            const elapsedText = formatElapsed(elapsedMs);
+            const remainingMs = Math.max(timeoutMs - elapsedMs, 0);
+            const remainingLabel =
+              remainingMs >= 60_000
+                ? `${Math.ceil(remainingMs / 60_000)} min`
+                : `${Math.max(1, Math.ceil(remainingMs / 1000))}s`;
+            return `API connection active — ${elapsedText} elapsed. Timeout in ~${remainingLabel} if no response.`;
+          },
+        });
+      }
       try {
         for await (const event of stream) {
           throwIfTimedOut();
           const isTextDelta =
-            event.type === 'chunk' || event.type === 'response.output_text.delta';
+            event.type === 'chunk' ||
+            event.type === 'response.output_text.delta';
           if (isTextDelta) {
             stopOscProgress();
             stopHeartbeatNow();
@@ -487,7 +573,8 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   // We only add spacing when streamed text was printed.
   if (sawTextDelta && !options.silent) {
     const fullStreamedText = streamedChunks.join('');
-    const shouldRenderAfterStream = isTty && !renderPlain && fullStreamedText.length > 0;
+    const shouldRenderAfterStream =
+      isTty && !renderPlain && fullStreamedText.length > 0;
     if (shouldRenderAfterStream) {
       const rendered = renderMarkdownAnsi(fullStreamedText);
       stdoutWrite(rendered);
@@ -524,13 +611,19 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     }
 
     if (response.status !== 'completed') {
-      const detail = response.error?.message || response.incomplete_details?.reason || response.status;
+      const detail =
+        response.error?.message ||
+        response.incomplete_details?.reason ||
+        response.status;
       log(
         chalk.yellow(
-          `API ended the run early (status=${response.status}${response.incomplete_details?.reason ? `, reason=${response.incomplete_details.reason}` : ''}).`,
-        ),
+          `API ended the run early (status=${response.status}${response.incomplete_details?.reason ? `, reason=${response.incomplete_details.reason}` : ''}).`
+        )
       );
-      throw new OracleResponseError(`Response did not complete: ${detail}`, response);
+      throw new OracleResponseError(
+        `Response did not complete: ${detail}`,
+        response
+      );
     }
   }
 
@@ -563,18 +656,23 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   const inputTokens = usage.input_tokens ?? estimatedInputTokens;
   const outputTokens = usage.output_tokens ?? 0;
   const reasoningTokens = usage.reasoning_tokens ?? 0;
-  const totalTokens = usage.total_tokens ?? inputTokens + outputTokens + reasoningTokens;
+  const totalTokens =
+    usage.total_tokens ?? inputTokens + outputTokens + reasoningTokens;
   const pricing = modelConfig.pricing ?? undefined;
   const cost = pricing
-    ? inputTokens * pricing.inputPerToken + outputTokens * pricing.outputPerToken
+    ? inputTokens * pricing.inputPerToken +
+      outputTokens * pricing.outputPerToken
     : undefined;
 
   const elapsedDisplay = formatElapsed(elapsedMs);
   const statsParts: string[] = [];
   const effortLabel = modelConfig.reasoning?.effort;
-  const modelLabel = effortLabel ? `${modelConfig.model}[${effortLabel}]` : modelConfig.model;
+  const modelLabel = effortLabel
+    ? `${modelConfig.model}[${effortLabel}]`
+    : modelConfig.model;
   const sessionIdContainsModel =
-    typeof options.sessionId === 'string' && options.sessionId.toLowerCase().includes(modelConfig.model.toLowerCase());
+    typeof options.sessionId === 'string' &&
+    options.sessionId.toLowerCase().includes(modelConfig.model.toLowerCase());
   // Avoid duplicating the model name in the prefix (session id) and the stats bundle; keep a single source of truth.
   if (!sessionIdContainsModel) {
     statsParts.push(modelLabel);
@@ -584,10 +682,17 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   } else {
     statsParts.push('cost=N/A');
   }
-  const tokensDisplay = [inputTokens, outputTokens, reasoningTokens, totalTokens]
+  const tokensDisplay = [
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    totalTokens,
+  ]
     .map((value, index) => formatTokenValue(value, usage, index))
     .join('/');
-  const tokensLabel = options.verbose ? 'tokens (input/output/reasoning/total)' : 'tok(i/o/r/t)';
+  const tokensLabel = options.verbose
+    ? 'tokens (input/output/reasoning/total)'
+    : 'tok(i/o/r/t)';
   statsParts.push(`${tokensLabel}=${tokensDisplay}`);
   if (options.verbose) {
     // Only surface request-vs-response deltas when verbose is explicitly requested to keep default stats compact.
@@ -595,9 +700,13 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     if (actualInput !== undefined) {
       const delta = actualInput - estimatedInputTokens;
       const deltaText =
-        delta === 0 ? '' : delta > 0 ? ` (+${delta.toLocaleString()})` : ` (${delta.toLocaleString()})`;
+        delta === 0
+          ? ''
+          : delta > 0
+            ? ` (+${delta.toLocaleString()})`
+            : ` (${delta.toLocaleString()})`;
       statsParts.push(
-        `est→actual=${estimatedInputTokens.toLocaleString()}→${actualInput.toLocaleString()}${deltaText}`,
+        `est→actual=${estimatedInputTokens.toLocaleString()}→${actualInput.toLocaleString()}${deltaText}`
       );
     }
   }
@@ -609,12 +718,22 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   }
 
   const sessionPrefix = options.sessionId ? `${options.sessionId} ` : '';
-  log(chalk.blue(`Finished ${sessionPrefix}in ${elapsedDisplay} (${statsParts.join(' | ')})`));
+  log(
+    chalk.blue(
+      `Finished ${sessionPrefix}in ${elapsedDisplay} (${statsParts.join(' | ')})`
+    )
+  );
 
   return {
     mode: 'live',
     response,
-    usage: { inputTokens, outputTokens, reasoningTokens, totalTokens, ...(cost != null ? { cost } : {}) },
+    usage: {
+      inputTokens,
+      outputTokens,
+      reasoningTokens,
+      totalTokens,
+      ...(cost != null ? { cost } : {}),
+    },
     elapsedMs,
   };
 }
@@ -628,7 +747,11 @@ export function extractTextOutput(response: OracleResponse): string {
     for (const item of response.output) {
       if (Array.isArray(item.content)) {
         for (const chunk of item.content) {
-          if (chunk && (chunk.type === 'output_text' || chunk.type === 'text') && chunk.text) {
+          if (
+            chunk &&
+            (chunk.type === 'output_text' || chunk.type === 'text') &&
+            chunk.text
+          ) {
             segments.push(chunk.text);
           }
         }

@@ -1,11 +1,20 @@
-import type { ModelConfig, ModelName, KnownModelName, TokenizerFn, ProModelName } from './types.js';
+import type {
+  ModelConfig,
+  ModelName,
+  KnownModelName,
+  TokenizerFn,
+  ProModelName,
+} from './types.js';
 import { MODEL_CONFIGS, PRO_MODELS } from './config.js';
 import { countTokens as countTokensGpt5Pro } from 'gpt-tokenizer/model/gpt-5-pro';
 
 const OPENROUTER_DEFAULT_BASE = 'https://openrouter.ai/api/v1';
 const OPENROUTER_MODELS_ENDPOINT = 'https://openrouter.ai/api/v1/models';
 
-type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type FetchFn = (
+  input: RequestInfo | URL,
+  init?: RequestInit
+) => Promise<Response>;
 
 export function isKnownModel(model: string): model is KnownModelName {
   return Object.hasOwn(MODEL_CONFIGS, model);
@@ -19,6 +28,29 @@ export function isOpenRouterBaseUrl(baseUrl: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Check if the base URL points to fal.ai's OpenRouter proxy.
+ * fal.ai proxies requests to OpenRouter, so it functions similarly for model resolution.
+ */
+export function isFalAiBaseUrl(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    const url = new URL(baseUrl);
+    return url.hostname.includes('fal.run') || url.hostname.includes('fal.ai');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if the base URL is an OpenRouter-compatible endpoint (OpenRouter or fal.ai proxy).
+ */
+export function isOpenRouterCompatibleBaseUrl(
+  baseUrl: string | undefined
+): boolean {
+  return isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl);
 }
 
 export function defaultOpenRouterBaseUrl(): string {
@@ -51,10 +83,16 @@ interface OpenRouterModelInfo {
   };
 }
 
-const catalogCache = new Map<string, { fetchedAt: number; models: OpenRouterModelInfo[] }>();
+const catalogCache = new Map<
+  string,
+  { fetchedAt: number; models: OpenRouterModelInfo[] }
+>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
-async function fetchOpenRouterCatalog(apiKey: string, fetcher: FetchFn): Promise<OpenRouterModelInfo[]> {
+async function fetchOpenRouterCatalog(
+  apiKey: string,
+  fetcher: FetchFn
+): Promise<OpenRouterModelInfo[]> {
   const cached = catalogCache.get(apiKey);
   const now = Date.now();
   if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
@@ -74,7 +112,11 @@ async function fetchOpenRouterCatalog(apiKey: string, fetcher: FetchFn): Promise
   return models;
 }
 
-function mapToOpenRouterId(candidate: string, catalog: OpenRouterModelInfo[], providerHint?: string): string {
+function mapToOpenRouterId(
+  candidate: string,
+  catalog: OpenRouterModelInfo[],
+  providerHint?: string
+): string {
   if (candidate.includes('/')) return candidate;
   const byExact = catalog.find((entry) => entry.id === candidate);
   if (byExact) return byExact.id;
@@ -92,11 +134,14 @@ export async function resolveModelConfig(
     baseUrl?: string;
     openRouterApiKey?: string;
     fetcher?: FetchFn;
-  } = {},
+  } = {}
 ): Promise<ModelConfig> {
-  const known = isKnownModel(model) ? (MODEL_CONFIGS[model] as ModelConfig) : null;
+  const known = isKnownModel(model)
+    ? (MODEL_CONFIGS[model] as ModelConfig)
+    : null;
   const fetcher: FetchFn = options.fetcher ?? globalThis.fetch.bind(globalThis);
-  const openRouterActive = isOpenRouterBaseUrl(options.baseUrl) || Boolean(options.openRouterApiKey);
+  const openRouterActive =
+    isOpenRouterBaseUrl(options.baseUrl) || Boolean(options.openRouterApiKey);
 
   if (known && !openRouterActive) {
     return known;
@@ -105,11 +150,14 @@ export async function resolveModelConfig(
   // Try to enrich from OpenRouter catalog when available.
   if (openRouterActive && options.openRouterApiKey) {
     try {
-      const catalog = await fetchOpenRouterCatalog(options.openRouterApiKey, fetcher);
+      const catalog = await fetchOpenRouterCatalog(
+        options.openRouterApiKey,
+        fetcher
+      );
       const targetId = mapToOpenRouterId(
         typeof model === 'string' ? model : String(model),
         catalog,
-        known?.provider,
+        known?.provider
       );
       const info = catalog.find((entry) => entry.id === targetId) ?? null;
       if (info) {
@@ -125,12 +173,14 @@ export async function resolveModelConfig(
           provider: known?.provider ?? 'other',
           inputLimit: info.context_length ?? known?.inputLimit ?? 200_000,
           pricing:
-            info.pricing && info.pricing.prompt != null && info.pricing.completion != null
+            info.pricing &&
+            info.pricing.prompt != null &&
+            info.pricing.completion != null
               ? {
                   inputPerToken: info.pricing.prompt / 1_000_000,
                   outputPerToken: info.pricing.completion / 1_000_000,
                 }
-              : known?.pricing ?? null,
+              : (known?.pricing ?? null),
           supportsBackground: known?.supportsBackground ?? true,
           supportsSearch: known?.supportsSearch ?? true,
         };
@@ -171,5 +221,8 @@ export async function resolveModelConfig(
 }
 
 export function isProModel(model: ModelName): boolean {
-  return isKnownModel(model) && PRO_MODELS.has(model as KnownModelName & ProModelName);
+  return (
+    isKnownModel(model) &&
+    PRO_MODELS.has(model as KnownModelName & ProModelName)
+  );
 }

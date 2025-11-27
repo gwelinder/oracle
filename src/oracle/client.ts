@@ -20,53 +20,103 @@ import { createGeminiClient } from './gemini.js';
 import { createClaudeClient } from './claude.js';
 import { isOpenRouterBaseUrl } from './modelResolver.js';
 
+/**
+ * Check if the base URL points to fal.ai's OpenRouter proxy.
+ * fal.ai uses a different auth header format: "Authorization: Key <FAL_KEY>"
+ */
+export function isFalAiBaseUrl(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    const url = new URL(baseUrl);
+    return url.hostname.includes('fal.run') || url.hostname.includes('fal.ai');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if the base URL is an OpenRouter-compatible endpoint (OpenRouter or fal.ai proxy).
+ * Both use chat/completions instead of the Responses API.
+ */
+export function isOpenRouterCompatibleBaseUrl(baseUrl: string | undefined): boolean {
+  return isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl);
+}
+
 export function createDefaultClientFactory(): ClientFactory {
   const customFactory = loadCustomClientFactory();
   if (customFactory) return customFactory;
   return (
     key: string,
-    options?: { baseUrl?: string; azure?: AzureOptions; model?: ModelName; resolvedModelId?: string },
+    options?: {
+      baseUrl?: string;
+      azure?: AzureOptions;
+      model?: ModelName;
+      resolvedModelId?: string;
+    }
   ): ClientLike => {
-    if (options?.model?.startsWith('gemini')) {
+    // When using OpenRouter or fal.ai, always use OpenAI-compatible client
+    // (bypasses Gemini/Claude native SDKs since they route through OpenRouter)
+    const useOpenRouterCompatible =
+      isOpenRouterBaseUrl(options?.baseUrl) || isFalAiBaseUrl(options?.baseUrl);
+
+    if (!useOpenRouterCompatible && options?.model?.startsWith('gemini')) {
       // Gemini client uses its own SDK; allow passing the already-resolved id for transparency/logging.
       return createGeminiClient(key, options.model, options.resolvedModelId);
     }
-    if (options?.model?.startsWith('claude')) {
-      return createClaudeClient(key, options.model, options.resolvedModelId, options.baseUrl);
+    if (!useOpenRouterCompatible && options?.model?.startsWith('claude')) {
+      return createClaudeClient(
+        key,
+        options.model,
+        options.resolvedModelId,
+        options.baseUrl
+      );
     }
 
     let instance: OpenAI;
-    const openRouter = isOpenRouterBaseUrl(options?.baseUrl);
-    const defaultHeaders: Record<string, string> | undefined = openRouter ? buildOpenRouterHeaders() : undefined;
+    // fal.ai requires "Authorization: Key <FAL_KEY>" instead of "Bearer"
+    // OpenRouter uses standard Bearer but wants HTTP-Referer and X-Title headers
+    const defaultHeaders: Record<string, string> | undefined = isFalAiBaseUrl(
+      options?.baseUrl
+    )
+      ? buildFalAiHeaders()
+      : isOpenRouterBaseUrl(options?.baseUrl)
+        ? buildOpenRouterHeaders()
+        : undefined;
 
+    // GPT-5-pro can take up to 90 minutes; use a generous client timeout.
+    const clientTimeoutMs = 95 * 60 * 1000;
     if (options?.azure?.endpoint) {
       instance = new AzureOpenAI({
         apiKey: key,
         endpoint: options.azure.endpoint,
         apiVersion: options.azure.apiVersion,
         deployment: options.azure.deployment,
-        timeout: 20 * 60 * 1000,
+        timeout: clientTimeoutMs,
       });
     } else {
       instance = new OpenAI({
         apiKey: key,
-        timeout: 20 * 60 * 1000,
+        timeout: clientTimeoutMs,
         baseURL: options?.baseUrl,
         defaultHeaders,
       });
     }
 
-    if (openRouter) {
+    // OpenRouter and fal.ai use chat/completions instead of Responses API
+    if (useOpenRouterCompatible) {
       return buildOpenRouterCompletionClient(instance);
     }
 
     return {
       responses: {
         stream: (body: OracleRequestBody) =>
-          instance.responses.stream(body) as unknown as Promise<ResponseStreamLike>,
+          instance.responses.stream(
+            body
+          ) as unknown as Promise<ResponseStreamLike>,
         create: (body: OracleRequestBody) =>
           instance.responses.create(body) as unknown as Promise<OracleResponse>,
-        retrieve: (id: string) => instance.responses.retrieve(id) as unknown as Promise<OracleResponse>,
+        retrieve: (id: string) =>
+          instance.responses.retrieve(id) as unknown as Promise<OracleResponse>,
       },
     };
   };
@@ -74,7 +124,41 @@ export function createDefaultClientFactory(): ClientFactory {
 
 function buildOpenRouterHeaders(): Record<string, string> | undefined {
   const headers: Record<string, string> = {};
-  const referer = process.env.OPENROUTER_REFERER ?? process.env.OPENROUTER_HTTP_REFERER ?? 'https://github.com/steipete/oracle';
+  const referer =
+    process.env.OPENROUTER_REFERER ??
+    process.env.OPENROUTER_HTTP_REFERER ??
+    'https://github.com/steipete/oracle';
+  const title = process.env.OPENROUTER_TITLE ?? 'Oracle CLI';
+  if (referer) {
+    headers['HTTP-Referer'] = referer;
+  }
+  if (title) {
+    headers['X-Title'] = title;
+  }
+  return headers;
+}
+
+/**
+ * Build headers for fal.ai OpenRouter proxy.
+ * fal.ai requires "Authorization: Key <FAL_KEY>" instead of the standard "Bearer" prefix.
+ * The FAL_KEY should be set in the environment.
+ */
+function buildFalAiHeaders(): Record<string, string> {
+  const falKey = process.env.FAL_KEY;
+  if (!falKey) {
+    throw new Error(
+      'FAL_KEY environment variable is required when using fal.ai endpoint. ' +
+        'Get your key at https://fal.ai/dashboard/keys'
+    );
+  }
+  const headers: Record<string, string> = {
+    Authorization: `Key ${falKey}`,
+  };
+  // Include OpenRouter attribution headers (fal.ai proxies to OpenRouter)
+  const referer =
+    process.env.OPENROUTER_REFERER ??
+    process.env.OPENROUTER_HTTP_REFERER ??
+    'https://github.com/steipete/oracle';
   const title = process.env.OPENROUTER_TITLE ?? 'Oracle CLI';
   if (referer) {
     headers['HTTP-Referer'] = referer;
@@ -102,15 +186,20 @@ function loadCustomClientFactory(): ClientFactory | null {
                 return { done: true, value: undefined };
               },
             }),
-            finalResponse: async () => ({ id: 'inline-test', status: 'completed' }),
+            finalResponse: async () => ({
+              id: 'inline-test',
+              status: 'completed',
+            }),
           }),
           retrieve: async (id: string) => ({ id, status: 'completed' }),
         },
-      } as unknown as ClientLike);
+      }) as unknown as ClientLike;
   }
   try {
     const require = createRequire(import.meta.url);
-    const resolved = path.isAbsolute(override) ? override : path.resolve(process.cwd(), override);
+    const resolved = path.isAbsolute(override)
+      ? override
+      : path.resolve(process.cwd(), override);
     const moduleExports = require(resolved);
     const factory =
       typeof moduleExports === 'function'
@@ -123,9 +212,14 @@ function loadCustomClientFactory(): ClientFactory | null {
     if (typeof factory === 'function') {
       return factory as ClientFactory;
     }
-    console.warn(`Custom client factory at ${resolved} did not export a function.`);
+    console.warn(
+      `Custom client factory at ${resolved} did not export a function.`
+    );
   } catch (error) {
-    console.warn(`Failed to load ORACLE_CLIENT_FACTORY module "${override}":`, error);
+    console.warn(
+      `Failed to load ORACLE_CLIENT_FACTORY module "${override}":`,
+      error
+    );
   }
   return null;
 }
