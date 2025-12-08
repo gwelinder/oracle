@@ -124,7 +124,8 @@ export async function uploadAttachmentFile(
     })()`,
     returnByValue: true,
   });
-  if (!markResult.result?.value) {
+  const marked = Boolean(markResult?.result?.value);
+  if (!marked) {
     await logDomFailure(runtime, logger, 'file-input-missing');
     throw new Error('Unable to locate ChatGPT file attachment input.');
   }
