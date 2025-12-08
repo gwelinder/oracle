@@ -5,6 +5,7 @@
 ### Fixed
 - Browser uploads: detect ChatGPT’s composer attachment chip (not echoed in the last user turn) to avoid false “Attachment did not appear” failures. Thanks Mariano Belinky (@mbelinky) for the fix.
 - Browser interruption: if the user/agent sends SIGINT/SIGTERM/SIGQUIT while the assistant response is still pending, Oracle leaves Chrome running, writes runtime hints, and logs how to reattach with `oracle session <slug>` instead of killing the browser mid-run.
+- API runs: requests for `gpt-5.1-pro` automatically downgrade to `gpt-5-pro` with a one-line notice because 5.1 Pro isn’t available via API yet.
 
 ## 0.5.3 — 2025-12-06
 
