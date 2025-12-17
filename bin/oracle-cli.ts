@@ -40,6 +40,7 @@ import type {
 } from '../src/oracle.js';
 import { CHATGPT_URL, normalizeChatgptUrl } from '../src/browserMode.js';
 import { createRemoteBrowserExecutor } from '../src/remote/client.js';
+import { createGeminiWebExecutor } from '../src/gemini-web/index.js';
 import { applyHelpStyling } from '../src/cli/help.js';
 import {
   collectPaths,
@@ -67,6 +68,7 @@ import {
 } from '../src/cli/browserConfig.js';
 import { performSessionRun } from '../src/cli/sessionRunner.js';
 import type { BrowserSessionRunnerDeps } from '../src/browser/sessionRunner.js';
+import { isMediaFile } from '../src/browser/prompt.js';
 import {
   attachSession,
   showStatus,
@@ -148,7 +150,9 @@ interface CliOptions extends OptionValues {
   browserHideWindow?: boolean;
   browserKeepBrowser?: boolean;
   browserManualLogin?: boolean;
+  browserExtendedThinking?: boolean;
   browserAllowCookieErrors?: boolean;
+  browserAttachments?: string;
   browserInlineFiles?: boolean;
   browserBundleFiles?: boolean;
   remoteChrome?: string;
@@ -188,7 +192,6 @@ const rawCliArgs = process.argv.slice(2);
 const userCliArgs =
   rawCliArgs[0] === CLI_ENTRYPOINT ? rawCliArgs.slice(1) : rawCliArgs;
 const isTty = process.stdout.isTTY;
-const tuiEnabled = () => isTty && process.env.ORACLE_NO_TUI !== '1';
 
 const program = new Command();
 let introPrinted = false;
@@ -205,8 +208,8 @@ program.hook('preAction', (thisCommand) => {
   if (userCliArgs.some((arg) => arg === '--help' || arg === '-h')) {
     return;
   }
-  if (userCliArgs.length === 0 && tuiEnabled()) {
-    // Skip prompt enforcement; runRootCommand will launch the TUI.
+  if (userCliArgs.length === 0) {
+    // Let the root action handle zero-arg entry (help + hint to `oracle tui`).
     return;
   }
   const opts = thisCommand.optsWithGlobals() as CliOptions;
@@ -231,9 +234,7 @@ program.hook('preAction', (thisCommand) => {
 });
 program
   .name('oracle')
-  .description(
-    'One-shot GPT-5.1 Pro / GPT-5.1 / GPT-5.1 Codex tool for hard questions that benefit from large file context and server-side search.'
-  )
+  .description('One-shot GPT-5.2 Pro / GPT-5.2 / GPT-5.1 Codex tool for hard questions that benefit from large file context and server-side search.')
   .version(VERSION)
   .argument('[prompt]', 'Prompt text (shorthand for --prompt).')
   .option('-p, --prompt <text>', 'User prompt to send to the model.')
@@ -278,13 +279,13 @@ program
   .option('-s, --slug <words>', 'Custom session slug (3-5 words).')
   .option(
     '-m, --model <model>',
-    'Model to target (gpt-5.1-pro default; also gpt-5-pro, gpt-5.1, gpt-5.1-codex API-only, gemini-3-pro, claude-4.5-sonnet, claude-4.1-opus, or ChatGPT labels like "5.1 Instant" for browser runs).',
-    normalizeModelOption
+    'Model to target (gpt-5.2-pro default; also supports gpt-5.1-pro alias). Also gpt-5-pro, gpt-5.1, gpt-5.1-codex API-only, gpt-5.2, gpt-5.2-instant, gpt-5.2-pro, gemini-3-pro, claude-4.5-sonnet, claude-4.1-opus, or ChatGPT labels like "5.2 Thinking" for browser runs).',
+    normalizeModelOption,
   )
   .addOption(
     new Option(
       '--models <models>',
-      'Comma-separated API model list to query in parallel (e.g., "gpt-5.1-pro,gemini-3-pro").'
+      'Comma-separated API model list to query in parallel (e.g., "gpt-5.2-pro,gemini-3-pro").',
     )
       .argParser(collectModelList)
       .default([])
@@ -292,7 +293,7 @@ program
   .addOption(
     new Option(
       '-e, --engine <mode>',
-      'Execution engine (api | browser). Engine is preferred; --mode is a legacy alias. If omitted, oracle picks api when OPENAI_API_KEY is set, otherwise browser.'
+      'Execution engine (api | browser). Browser engine: GPT models automate ChatGPT; Gemini models use a cookie-based client for gemini.google.com. If omitted, oracle picks api when OPENAI_API_KEY is set, otherwise browser.',
     ).choices(['api', 'browser'])
   )
   .addOption(
@@ -321,7 +322,7 @@ program
   .addOption(
     new Option(
       '--timeout <seconds|auto>',
-      'Overall timeout before aborting the API call (auto = 60m for gpt-5.1-pro, 120s otherwise).'
+      'Overall timeout before aborting the API call (auto = 60m for gpt-5.2-pro, 120s otherwise).',
     )
       .argParser(parseTimeoutOption)
       .default('auto')
@@ -493,29 +494,23 @@ program
       'Skip cookie copy; reuse a persistent automation profile and wait for manual ChatGPT login.'
     ).hideHelp()
   )
-  .addOption(
-    new Option(
-      '--browser-headless',
-      'Launch Chrome in headless mode.'
-    ).hideHelp()
-  )
-  .addOption(
-    new Option(
-      '--browser-hide-window',
-      'Hide the Chrome window after launch (macOS headful only).'
-    ).hideHelp()
-  )
-  .addOption(
-    new Option(
-      '--browser-keep-browser',
-      'Keep Chrome running after completion.'
-    ).hideHelp()
-  )
+  .addOption(new Option('--browser-headless', 'Launch Chrome in headless mode.').hideHelp())
+  .addOption(new Option('--browser-hide-window', 'Hide the Chrome window after launch (macOS headful only).').hideHelp())
+  .addOption(new Option('--browser-keep-browser', 'Keep Chrome running after completion.').hideHelp())
+  .addOption(new Option('--browser-extended-thinking', 'Select Extended thinking time for GPT-5.2 Thinking model.').hideHelp())
   .addOption(
     new Option(
       '--browser-allow-cookie-errors',
       'Continue even if Chrome cookies cannot be copied.'
     ).hideHelp()
+  )
+  .addOption(
+    new Option(
+      '--browser-attachments <mode>',
+      'How to deliver --file inputs in browser mode: auto (default) pastes inline up to ~60k chars then uploads; never always paste inline; always always upload.',
+    )
+      .choices(['auto', 'never', 'always'])
+      .default('auto'),
   )
   .addOption(
     new Option(
@@ -547,6 +542,27 @@ program
       'Bundle all attachments into a single archive before uploading.'
     ).default(false)
   )
+  .addOption(
+    new Option(
+      '--youtube <url>',
+      'YouTube video URL to analyze (Gemini web/cookie mode only; uses your signed-in Chrome cookies for gemini.google.com).',
+    ),
+  )
+  .addOption(
+    new Option(
+      '--generate-image <file>',
+      'Generate image and save to file (Gemini web/cookie mode only; requires gemini.google.com Chrome cookies).',
+    ),
+  )
+  .addOption(new Option('--edit-image <file>', 'Edit existing image (use with --output, Gemini web/cookie mode only).'))
+  .addOption(new Option('--output <file>', 'Output file path for image operations (Gemini web/cookie mode only).'))
+  .addOption(
+    new Option(
+      '--aspect <ratio>',
+      'Aspect ratio for image generation: 16:9, 1:1, 4:3, 3:4 (Gemini web/cookie mode only).',
+    ),
+  )
+  .addOption(new Option('--gemini-show-thoughts', 'Display Gemini thinking process (Gemini web/cookie mode only).').default(false))
   .option(
     '--retain-hours <hours>',
     'Prune stored sessions older than this many hours before running (set 0 to disable).',
@@ -606,6 +622,14 @@ program
       port: commandOptions.port,
       token: commandOptions.token,
     });
+  });
+
+program
+  .command('tui')
+  .description('Launch the interactive terminal UI for humans (no automation).')
+  .action(async () => {
+    await sessionStore.ensureStorage();
+    await launchTui({ version: VERSION, printIntro: false });
   });
 
 const sessionCommand = program
@@ -802,13 +826,10 @@ function buildRunOptions(
     azure,
     sessionId: overrides.sessionId ?? options.sessionId,
     verbose: overrides.verbose ?? options.verbose,
-    heartbeatIntervalMs:
-      overrides.heartbeatIntervalMs ??
-      resolveHeartbeatIntervalMs(options.heartbeat),
-    browserInlineFiles:
-      overrides.browserInlineFiles ?? options.browserInlineFiles ?? false,
-    browserBundleFiles:
-      overrides.browserBundleFiles ?? options.browserBundleFiles ?? false,
+    heartbeatIntervalMs: overrides.heartbeatIntervalMs ?? resolveHeartbeatIntervalMs(options.heartbeat),
+    browserAttachments: overrides.browserAttachments ?? (options.browserAttachments as 'auto' | 'never' | 'always' | undefined) ?? 'auto',
+    browserInlineFiles: overrides.browserInlineFiles ?? options.browserInlineFiles ?? false,
+    browserBundleFiles: overrides.browserBundleFiles ?? options.browserBundleFiles ?? false,
     background: overrides.background ?? undefined,
     renderPlain: overrides.renderPlain ?? options.renderPlain ?? false,
     writeOutputPath: overrides.writeOutputPath ?? options.writeOutputPath,
@@ -864,6 +885,7 @@ function buildRunOptionsFromMetadata(
     sessionId: metadata.id,
     verbose: stored.verbose,
     heartbeatIntervalMs: stored.heartbeatIntervalMs,
+    browserAttachments: stored.browserAttachments,
     browserInlineFiles: stored.browserInlineFiles,
     browserBundleFiles: stored.browserBundleFiles,
     background: stored.background,
@@ -970,16 +992,8 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
 
   if (userCliArgs.length === 0) {
-    if (tuiEnabled()) {
-      await launchTui({ version: VERSION, printIntro: false });
-      return;
-    }
-    console.log(
-      chalk.yellow(
-        'No prompt or subcommand supplied. See `oracle --help` for usage.'
-      )
-    );
-    program.help({ error: false });
+    console.log(chalk.yellow('No prompt or subcommand supplied. Run `oracle --help` or `oracle tui` for the TUI.'));
+    program.outputHelp();
     return;
   }
   const retentionHours =
@@ -1076,21 +1090,16 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const isCodex = primaryModelCandidate.startsWith('gpt-5.1-codex');
   const isClaude = primaryModelCandidate.startsWith('claude');
   const userForcedBrowser = options.browser || options.engine === 'browser';
-  const hasNonGptBrowserTarget =
+  const isBrowserCompatible = (model: string) => model.startsWith('gpt-') || model.startsWith('gemini');
+  const hasNonBrowserCompatibleTarget =
     (engine === 'browser' || userForcedBrowser) &&
     (normalizedMultiModels.length > 0
-      ? normalizedMultiModels.some((model) => !model.startsWith('gpt-'))
-      : !resolvedModelCandidate.startsWith('gpt-'));
-  if (hasNonGptBrowserTarget) {
+      ? normalizedMultiModels.some((model) => !isBrowserCompatible(model))
+      : !isBrowserCompatible(resolvedModelCandidate));
+  if (hasNonBrowserCompatibleTarget) {
     throw new Error(
-      'Browser engine only supports GPT-series ChatGPT models. Re-run with --engine api for Grok, Claude, Gemini, or other non-GPT models.'
+      'Browser engine only supports GPT and Gemini models. Re-run with --engine api for Grok, Claude, or other models.'
     );
-  }
-  if (isGemini && userForcedBrowser) {
-    throw new Error('Gemini is only supported via API. Use --engine api.');
-  }
-  if (isGemini && engine === 'browser') {
-    engine = 'api';
   }
   if (isClaude && engine === 'browser') {
     console.log(
@@ -1300,7 +1309,11 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
 
   if (options.file && options.file.length > 0) {
-    await readFiles(options.file, { cwd: process.cwd() });
+    const isBrowserMode = engine === 'browser' || userForcedBrowser;
+    const filesToValidate = isBrowserMode ? options.file.filter((f: string) => !isMediaFile(f)) : options.file;
+    if (filesToValidate.length > 0) {
+      await readFiles(filesToValidate, { cwd: process.cwd() });
+    }
   }
 
   const getSource = (key: keyof CliOptions) =>
@@ -1339,6 +1352,18 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     console.log(
       chalk.dim(`Routing browser automation to remote host ${remoteHost}`)
     );
+  } else if (browserConfig && resolvedModel.startsWith('gemini')) {
+    browserDeps = {
+      executeBrowser: createGeminiWebExecutor({
+        youtube: options.youtube,
+        generateImage: options.generateImage,
+        editImage: options.editImage,
+        outputPath: options.output,
+        aspectRatio: options.aspect,
+        showThoughts: options.geminiShowThoughts,
+      }),
+    };
+    console.log(chalk.dim('Using Gemini web client for browser automation'));
   }
   const remoteExecutionActive = Boolean(browserDeps);
 

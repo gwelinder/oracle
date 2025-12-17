@@ -8,6 +8,8 @@ import {
 } from '../constants.js';
 import { delay } from '../utils.js';
 import { logDomFailure } from '../domDebug.js';
+import { buildClickDispatcher } from './domEvents.js';
+import { BrowserAutomationError } from '../../oracle/errors.js';
 
 const ENTER_KEY_EVENT = {
   key: 'Enter',
@@ -18,28 +20,23 @@ const ENTER_KEY_EVENT = {
 const ENTER_KEY_TEXT = '\r';
 
 export async function submitPrompt(
-  deps: { runtime: ChromeClient['Runtime']; input: ChromeClient['Input'] },
+  deps: { runtime: ChromeClient['Runtime']; input: ChromeClient['Input']; attachmentNames?: string[] },
   prompt: string,
   logger: BrowserLogger,
 ) {
   const { runtime, input } = deps;
+
+  await waitForDomReady(runtime, logger);
   const encodedPrompt = JSON.stringify(prompt);
   const focusResult = await runtime.evaluate({
     expression: `(() => {
+      ${buildClickDispatcher()}
       const SELECTORS = ${JSON.stringify(INPUT_SELECTORS)};
-      const dispatchPointer = (target) => {
-        if (!(target instanceof HTMLElement)) {
-          return;
-        }
-        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-          target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
-        }
-      };
       const focusNode = (node) => {
         if (!node) {
           return false;
         }
-        dispatchPointer(node);
+        dispatchClickSequence(node);
         if (typeof node.focus === 'function') {
           node.focus();
         }
@@ -92,9 +89,11 @@ export async function submitPrompt(
     returnByValue: true,
   });
 
-  const editorText = verification.result?.value?.editorText?.trim?.() ?? '';
-  const fallbackValue = verification.result?.value?.fallbackValue?.trim?.() ?? '';
-  if (!editorText && !fallbackValue) {
+  const editorTextRaw = verification.result?.value?.editorText ?? '';
+  const fallbackValueRaw = verification.result?.value?.fallbackValue ?? '';
+  const editorTextTrimmed = editorTextRaw?.trim?.() ?? '';
+  const fallbackValueTrimmed = fallbackValueRaw?.trim?.() ?? '';
+  if (!editorTextTrimmed && !fallbackValueTrimmed) {
     await runtime.evaluate({
       expression: `(() => {
         const fallback = document.querySelector(${fallbackSelectorLiteral});
@@ -106,12 +105,39 @@ export async function submitPrompt(
         const editor = document.querySelector(${primarySelectorLiteral});
         if (editor) {
           editor.textContent = ${encodedPrompt};
+          // Nudge ProseMirror to register the textContent write so its state/send-button updates
+          editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: ${encodedPrompt}, inputType: 'insertFromPaste' }));
         }
       })()`,
     });
   }
 
-  const clicked = await attemptSendButton(runtime);
+  const promptLength = prompt.length;
+  const postVerification = await runtime.evaluate({
+    expression: `(() => {
+      const editor = document.querySelector(${primarySelectorLiteral});
+      const fallback = document.querySelector(${fallbackSelectorLiteral});
+      return {
+        editorText: editor?.innerText ?? '',
+        fallbackValue: fallback?.value ?? '',
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const observedEditor = postVerification.result?.value?.editorText ?? '';
+  const observedFallback = postVerification.result?.value?.fallbackValue ?? '';
+  const observedLength = Math.max(observedEditor.length, observedFallback.length);
+  if (promptLength >= 50_000 && observedLength > 0 && observedLength < promptLength - 2_000) {
+    await logDomFailure(runtime, logger, 'prompt-too-large');
+    throw new BrowserAutomationError('Prompt appears truncated in the composer (likely too large).', {
+      stage: 'submit-prompt',
+      code: 'prompt-too-large',
+      promptLength,
+      observedLength,
+    });
+  }
+
+  const clicked = await attemptSendButton(runtime, logger, deps?.attachmentNames);
   if (!clicked) {
     await input.dispatchKeyEvent({
       type: 'keyDown',
@@ -129,12 +155,105 @@ export async function submitPrompt(
   }
 
   await verifyPromptCommitted(runtime, prompt, 30_000, logger);
-
-  await clickAnswerNowIfPresent(runtime, logger);
 }
 
-async function attemptSendButton(Runtime: ChromeClient['Runtime']): Promise<boolean> {
+export async function clearPromptComposer(Runtime: ChromeClient['Runtime'], logger: BrowserLogger) {
+  const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
+  const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
+  const result = await Runtime.evaluate({
+    expression: `(() => {
+      const fallback = document.querySelector(${fallbackSelectorLiteral});
+      const editor = document.querySelector(${primarySelectorLiteral});
+      let cleared = false;
+      if (fallback) {
+        fallback.value = '';
+        fallback.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteByCut' }));
+        fallback.dispatchEvent(new Event('change', { bubbles: true }));
+        cleared = true;
+      }
+      if (editor) {
+        editor.textContent = '';
+        editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteByCut' }));
+        cleared = true;
+      }
+      return { cleared };
+    })()`,
+    returnByValue: true,
+  });
+  if (!result.result?.value?.cleared) {
+    await logDomFailure(Runtime, logger, 'clear-composer');
+    throw new Error('Failed to clear prompt composer');
+  }
+  await delay(250);
+}
+
+async function waitForDomReady(Runtime: ChromeClient['Runtime'], logger?: BrowserLogger) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const { result } = await Runtime.evaluate({
+      expression: `(() => {
+        const ready = document.readyState === 'complete';
+        const composer = document.querySelector('[data-testid*="composer"]') || document.querySelector('form');
+        const fileInput = document.querySelector('input[type="file"]');
+        return { ready, composer: Boolean(composer), fileInput: Boolean(fileInput) };
+      })()`,
+      returnByValue: true,
+    });
+    const value = result?.value as { ready?: boolean; composer?: boolean; fileInput?: boolean } | undefined;
+    if (value?.ready && value.composer) {
+      return;
+    }
+    await delay(150);
+  }
+  logger?.('Page did not reach ready/composer state within 10s; continuing cautiously.');
+}
+
+function buildAttachmentReadyExpression(attachmentNames: string[]): string {
+  const namesLiteral = JSON.stringify(attachmentNames.map((name) => name.toLowerCase()));
+  return `(() => {
+    const names = ${namesLiteral};
+    const composer =
+      document.querySelector('[data-testid*="composer"]') ||
+      document.querySelector('form') ||
+      document.body ||
+      document;
+    const match = (node, name) => (node?.textContent || '').toLowerCase().includes(name);
+
+    // Restrict to attachment affordances; never scan generic div/span nodes (prompt text can contain the file name).
+    const attachmentSelectors = [
+      '[data-testid*="chip"]',
+      '[data-testid*="attachment"]',
+      '[data-testid*="upload"]',
+      '[aria-label="Remove file"]',
+      'button[aria-label="Remove file"]',
+    ];
+
+    const chipsReady = names.every((name) =>
+      Array.from(composer.querySelectorAll(attachmentSelectors.join(','))).some((node) => match(node, name)),
+    );
+    const inputsReady = names.every((name) =>
+      Array.from(composer.querySelectorAll('input[type="file"]')).some((el) =>
+        Array.from((el instanceof HTMLInputElement ? el.files : []) || []).some((file) =>
+          file?.name?.toLowerCase?.().includes(name),
+        ),
+      ),
+    );
+
+    return chipsReady || inputsReady;
+  })()`;
+}
+
+export function buildAttachmentReadyExpressionForTest(attachmentNames: string[]) {
+  return buildAttachmentReadyExpression(attachmentNames);
+}
+
+async function attemptSendButton(
+  Runtime: ChromeClient['Runtime'],
+  _logger?: BrowserLogger,
+  attachmentNames?: string[],
+): Promise<boolean> {
   const script = `(() => {
+    ${buildClickDispatcher()}
     const selectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
     let button = null;
     for (const selector of selectors) {
@@ -152,12 +271,24 @@ async function attemptSendButton(Runtime: ChromeClient['Runtime']): Promise<bool
       style.pointerEvents === 'none' ||
       style.display === 'none';
     if (disabled) return 'disabled';
-    (button as HTMLElement).click();
+    // Use unified pointer/mouse sequence to satisfy React handlers.
+    dispatchClickSequence(button);
     return 'clicked';
   })()`;
 
-  const deadline = Date.now() + 2_000;
+  const deadline = Date.now() + 8_000;
   while (Date.now() < deadline) {
+    const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
+    if (needAttachment) {
+      const ready = await Runtime.evaluate({
+        expression: buildAttachmentReadyExpression(attachmentNames),
+        returnByValue: true,
+      });
+      if (!ready?.result?.value) {
+        await delay(150);
+        continue;
+      }
+    }
     const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
     if (result.value === 'clicked') {
       return true;
@@ -170,41 +301,6 @@ async function attemptSendButton(Runtime: ChromeClient['Runtime']): Promise<bool
   return false;
 }
 
-async function clickAnswerNowIfPresent(Runtime: ChromeClient['Runtime'], logger?: BrowserLogger) {
-  const script = `(() => {
-    const matchesText = (el) => (el?.textContent || '').trim().toLowerCase() === 'answer now';
-    const candidate = Array.from(document.querySelectorAll('button,span')).find(matchesText);
-    if (!candidate) return 'missing';
-    const button = candidate.closest('button') ?? candidate;
-    const style = window.getComputedStyle(button);
-    const disabled =
-      button.hasAttribute('disabled') ||
-      button.getAttribute('aria-disabled') === 'true' ||
-      style.pointerEvents === 'none' ||
-      style.display === 'none';
-    if (disabled) return 'disabled';
-    (button).dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
-    (button).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    (button).dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true }));
-    (button).dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-    (button).dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    return 'clicked';
-  })()`;
-
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) {
-    const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
-    const status = result.value as string;
-    if (status === 'clicked') {
-      logger?.('Clicked "Answer now" gate');
-      await delay(500);
-      return;
-    }
-    if (status === 'missing') return;
-    await delay(100);
-  }
-}
-
 async function verifyPromptCommitted(
   Runtime: ChromeClient['Runtime'],
   prompt: string,
@@ -215,31 +311,62 @@ async function verifyPromptCommitted(
   const encodedPrompt = JSON.stringify(prompt.trim());
   const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
   const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
-  const script = `(() => {
-    const editor = document.querySelector(${primarySelectorLiteral});
-    const fallback = document.querySelector(${fallbackSelectorLiteral});
-    const normalize = (value) => value?.toLowerCase?.().replace(/\\s+/g, ' ').trim() ?? '';
-    const normalizedPrompt = normalize(${encodedPrompt});
-    const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
-    const articles = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
-    const userMatched = articles.some((node) => normalize(node?.innerText).includes(normalizedPrompt));
-    return {
+	const script = `(() => {
+	    const editor = document.querySelector(${primarySelectorLiteral});
+	    const fallback = document.querySelector(${fallbackSelectorLiteral});
+	    const normalize = (value) => {
+	      let text = value?.toLowerCase?.() ?? '';
+	      // Strip markdown *markers* but keep content (ChatGPT renders fence markers differently).
+	      text = text.replace(/\`\`\`[^\\n]*\\n([\\s\\S]*?)\`\`\`/g, ' $1 ');
+	      text = text.replace(/\`\`\`/g, ' ');
+	      text = text.replace(/\`([^\`]*)\`/g, '$1');
+	      return text.replace(/\\s+/g, ' ').trim();
+	    };
+	    const normalizedPrompt = normalize(${encodedPrompt});
+	    const normalizedPromptPrefix = normalizedPrompt.slice(0, 120);
+	    const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
+	    const articles = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+	    const normalizedTurns = articles.map((node) => normalize(node?.innerText));
+	    const userMatched =
+	      normalizedPrompt.length > 0 && normalizedTurns.some((text) => text.includes(normalizedPrompt));
+	    const prefixMatched =
+	      normalizedPromptPrefix.length > 30 &&
+	      normalizedTurns.some((text) => text.includes(normalizedPromptPrefix));
+	    const lastTurn = normalizedTurns[normalizedTurns.length - 1] ?? '';
+	    return {
       userMatched,
+      prefixMatched,
       fallbackValue: fallback?.value ?? '',
       editorValue: editor?.innerText ?? '',
+      lastTurn,
+      turnsCount: normalizedTurns.length,
     };
   })()`;
 
   while (Date.now() < deadline) {
     const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
-    const info = result.value as { userMatched: boolean };
-    if (info?.userMatched) {
+    const info = result.value as { userMatched: boolean; prefixMatched?: boolean };
+    if (info?.userMatched || info?.prefixMatched) {
       return;
     }
     await delay(100);
   }
   if (logger) {
+    logger(
+      `Prompt commit check failed; latest state: ${await Runtime.evaluate({
+        expression: script,
+        returnByValue: true,
+      }).then((res) => JSON.stringify(res?.result?.value)).catch(() => 'unavailable')}`,
+    );
     await logDomFailure(Runtime, logger, 'prompt-commit');
+  }
+  if (prompt.trim().length >= 50_000) {
+    throw new BrowserAutomationError('Prompt did not appear in conversation before timeout (likely too large).', {
+      stage: 'submit-prompt',
+      code: 'prompt-too-large',
+      promptLength: prompt.trim().length,
+      timeoutMs,
+    });
   }
   throw new Error('Prompt did not appear in conversation before timeout (send may have failed)');
 }

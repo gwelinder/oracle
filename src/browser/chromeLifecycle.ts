@@ -41,6 +41,12 @@ export function registerTerminationHooks(
   userDataDir: string,
   keepBrowser: boolean,
   logger: BrowserLogger,
+  opts?: {
+    /** Return true when the run is still in-flight (assistant response pending). */
+    isInFlight?: () => boolean;
+    /** Persist runtime hints so reattach can find the live Chrome. */
+    emitRuntimeHint?: () => Promise<void>;
+  },
 ): () => void {
   const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
   let handling: boolean | undefined;
@@ -50,13 +56,21 @@ export function registerTerminationHooks(
       return;
     }
     handling = true;
-    if (keepBrowser) {
-      logger(`Received ${signal}; leaving Chrome running for potential reattach`);
+    const inFlight = opts?.isInFlight?.() ?? false;
+    const leaveRunning = keepBrowser || inFlight;
+    if (leaveRunning) {
+      logger(`Received ${signal}; leaving Chrome running${inFlight ? ' (assistant response pending)' : ''}`);
     } else {
       logger(`Received ${signal}; terminating Chrome process`);
     }
     void (async () => {
-      if (!keepBrowser) {
+      if (leaveRunning) {
+        // Ensure reattach hints are written before we exit.
+        await opts?.emitRuntimeHint?.().catch(() => undefined);
+        if (inFlight) {
+          logger('Session still in flight; reattach with "oracle session <slug>" to continue.');
+        }
+      } else {
         try {
           await chrome.kill();
         } catch {

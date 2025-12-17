@@ -37,7 +37,6 @@ import { formatElapsed } from '../oracle/format.js';
 import { sanitizeOscProgress } from './oscUtils.js';
 import { readFiles } from '../oracle/files.js';
 import { formatUSD } from '../oracle/format.js';
-import { SESSIONS_DIR } from '../sessionManager.js';
 import { cwd as getCwd } from 'node:process';
 
 const isTty = process.stdout.isTTY;
@@ -85,9 +84,6 @@ export async function performSessionRun({
   const modelForStatus = runOptions.model ?? sessionMeta.model;
   try {
     if (mode === 'browser') {
-      if (runOptions.model.startsWith('gemini')) {
-        throw new Error('Gemini models are not available in browser mode. Re-run with --engine api.');
-      }
       if (!browserConfig) {
         throw new Error('Missing browser configuration for session.');
       }
@@ -445,15 +441,6 @@ export async function performSessionRun({
           }
         : undefined,
     });
-    if (mode === 'browser') {
-      log(dim('Next steps (browser fallback):')); // guides users when automation breaks
-      log(dim('- Rerun with --engine api to bypass Chrome entirely.'));
-      log(
-        dim(
-          '- Or rerun with --engine api --render-markdown [--file …] to generate a single markdown bundle you can paste into ChatGPT manually (add --browser-bundle-files if you still want attachments).',
-        ),
-      );
-    }
     if (modelForStatus) {
       await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
         status: 'error',
@@ -475,7 +462,7 @@ async function writeAssistantOutput(targetPath: string | undefined, content: str
     return;
   }
   const normalizedTarget = path.resolve(targetPath);
-  const normalizedSessionsDir = path.resolve(SESSIONS_DIR);
+  const normalizedSessionsDir = path.resolve(sessionStore.sessionsDir());
   if (
     normalizedTarget === normalizedSessionsDir ||
     normalizedTarget.startsWith(`${normalizedSessionsDir}${path.sep}`)
@@ -532,7 +519,7 @@ function buildFallbackPath(original: string): string | null {
   const dir = getCwd();
   const candidate = ext ? `${stem}.fallback${ext}` : `${stem}.fallback`;
   const fallback = path.join(dir, candidate);
-  const normalizedSessionsDir = path.resolve(SESSIONS_DIR);
+  const normalizedSessionsDir = path.resolve(sessionStore.sessionsDir());
   const normalizedFallback = path.resolve(fallback);
   if (
     normalizedFallback === normalizedSessionsDir ||

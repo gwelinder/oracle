@@ -25,40 +25,45 @@ export function applyBrowserDefaultsFromConfig(
   const browser = config.browser;
   if (!browser) return;
 
+  const isUnset = (key: keyof BrowserDefaultsOptions): boolean => {
+    const source = getSource(key);
+    return source === undefined || source === 'default';
+  };
+
   const configuredChatgptUrl = browser.chatgptUrl ?? browser.url;
   const cliChatgptSet = options.chatgptUrl !== undefined || options.browserUrl !== undefined;
-  if ((getSource('chatgptUrl') === 'default' || getSource('chatgptUrl') === undefined) && !cliChatgptSet && configuredChatgptUrl !== undefined) {
+  if (isUnset('chatgptUrl') && !cliChatgptSet && configuredChatgptUrl !== undefined) {
     options.chatgptUrl = normalizeChatgptUrl(configuredChatgptUrl ?? '', CHATGPT_URL);
   }
 
-  if (getSource('browserChromeProfile') === 'default' && browser.chromeProfile !== undefined) {
+  if (isUnset('browserChromeProfile') && browser.chromeProfile !== undefined) {
     options.browserChromeProfile = browser.chromeProfile ?? undefined;
   }
-  if (getSource('browserChromePath') === 'default' && browser.chromePath !== undefined) {
+  if (isUnset('browserChromePath') && browser.chromePath !== undefined) {
     options.browserChromePath = browser.chromePath ?? undefined;
   }
-  if (getSource('browserCookiePath') === 'default' && browser.chromeCookiePath !== undefined) {
+  if (isUnset('browserCookiePath') && browser.chromeCookiePath !== undefined) {
     options.browserCookiePath = browser.chromeCookiePath ?? undefined;
   }
-  if ((getSource('browserUrl') === 'default' || getSource('browserUrl') === undefined) && options.browserUrl === undefined && browser.url !== undefined) {
+  if (isUnset('browserUrl') && options.browserUrl === undefined && browser.url !== undefined) {
     options.browserUrl = browser.url;
   }
-  if (getSource('browserTimeout') === 'default' && typeof browser.timeoutMs === 'number') {
+  if (isUnset('browserTimeout') && typeof browser.timeoutMs === 'number') {
     options.browserTimeout = String(browser.timeoutMs);
   }
-  if (getSource('browserPort') === 'default' && typeof browser.debugPort === 'number') {
+  if (isUnset('browserPort') && typeof browser.debugPort === 'number') {
     options.browserPort = browser.debugPort;
   }
-  if (getSource('browserInputTimeout') === 'default' && typeof browser.inputTimeoutMs === 'number') {
+  if (isUnset('browserInputTimeout') && typeof browser.inputTimeoutMs === 'number') {
     options.browserInputTimeout = String(browser.inputTimeoutMs);
   }
-  if (getSource('browserHeadless') === 'default' && browser.headless !== undefined) {
+  if (isUnset('browserHeadless') && browser.headless !== undefined) {
     options.browserHeadless = browser.headless;
   }
-  if (getSource('browserHideWindow') === 'default' && browser.hideWindow !== undefined) {
+  if (isUnset('browserHideWindow') && browser.hideWindow !== undefined) {
     options.browserHideWindow = browser.hideWindow;
   }
-  if (getSource('browserKeepBrowser') === 'default' && browser.keepBrowser !== undefined) {
+  if (isUnset('browserKeepBrowser') && browser.keepBrowser !== undefined) {
     options.browserKeepBrowser = browser.keepBrowser;
   }
 }

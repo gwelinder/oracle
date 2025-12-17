@@ -2,23 +2,28 @@ import { describe, expect, test, vi, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setOracleHomeDirOverrideForTest } from '../../src/oracleHome.js';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+
+vi.mock('../../src/browser/reattach.js', () => ({ resumeBrowserSession: vi.fn() }));
 
 afterEach(() => {
+  vi.clearAllMocks();
   vi.restoreAllMocks();
-  vi.resetModules();
+  setOracleHomeDirOverrideForTest(null);
 });
 
 describe('browser reattach end-to-end (simulated)', () => {
   test('marks session completed after reconnection', async () => {
     const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-reattach-'));
-    const prevHome = process.env.ORACLE_HOME_DIR;
-    process.env.ORACLE_HOME_DIR = tmpHome;
+    setOracleHomeDirOverrideForTest(tmpHome);
 
     try {
-      const resumeMock = vi.fn(async () => ({ answerText: 'ok text', answerMarkdown: 'ok markdown' }));
+      const { resumeBrowserSession } = await import('../../src/browser/reattach.js');
+      const resumeMock = vi.mocked(resumeBrowserSession);
+      resumeMock.mockResolvedValue({ answerText: 'ok text', answerMarkdown: 'ok markdown' });
 
-      vi.resetModules();
-      vi.doMock('../../src/browser/reattach.js', () => ({ resumeBrowserSession: resumeMock }));
       const { sessionStore } = await import('../../src/sessionStore.js');
       const { attachSession } = await import('../../src/cli/sessionDisplay.js');
 
@@ -26,13 +31,13 @@ describe('browser reattach end-to-end (simulated)', () => {
       const sessionMeta = await sessionStore.createSession(
         {
           prompt: 'Test prompt',
-          model: 'gpt-5.1-pro',
+          model: 'gpt-5.2-pro',
           mode: 'browser',
           browserConfig: {},
         },
         '/repo',
       );
-      await sessionStore.updateModelRun(sessionMeta.id, 'gpt-5.1-pro', {
+      await sessionStore.updateModelRun(sessionMeta.id, 'gpt-5.2-pro', {
         status: 'running',
         startedAt: new Date().toISOString(),
       });
@@ -66,24 +71,19 @@ describe('browser reattach end-to-end (simulated)', () => {
       expect(runs.some((r) => r.status === 'completed')).toBe(true);
     } finally {
       await fs.rm(tmpHome, { recursive: true, force: true });
-      if (prevHome === undefined) {
-        delete process.env.ORACLE_HOME_DIR;
-      } else {
-        process.env.ORACLE_HOME_DIR = prevHome;
-      }
+      setOracleHomeDirOverrideForTest(null);
     }
   });
 
   test('reattaches when controller pid is gone even without incompleteReason', async () => {
     const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-reattach-'));
-    const prevHome = process.env.ORACLE_HOME_DIR;
-    process.env.ORACLE_HOME_DIR = tmpHome;
+    setOracleHomeDirOverrideForTest(tmpHome);
 
     try {
-      const resumeMock = vi.fn(async () => ({ answerText: 'ok text', answerMarkdown: 'ok markdown' }));
+      const { resumeBrowserSession } = await import('../../src/browser/reattach.js');
+      const resumeMock = vi.mocked(resumeBrowserSession);
+      resumeMock.mockResolvedValue({ answerText: 'ok text', answerMarkdown: 'ok markdown' });
 
-      vi.resetModules();
-      vi.doMock('../../src/browser/reattach.js', () => ({ resumeBrowserSession: resumeMock }));
       const { sessionStore } = await import('../../src/sessionStore.js');
       const { attachSession } = await import('../../src/cli/sessionDisplay.js');
 
@@ -91,13 +91,13 @@ describe('browser reattach end-to-end (simulated)', () => {
       const sessionMeta = await sessionStore.createSession(
         {
           prompt: 'Test prompt',
-          model: 'gpt-5.1-pro',
+          model: 'gpt-5.2-pro',
           mode: 'browser',
           browserConfig: {},
         },
         '/repo',
       );
-      await sessionStore.updateModelRun(sessionMeta.id, 'gpt-5.1-pro', {
+      await sessionStore.updateModelRun(sessionMeta.id, 'gpt-5.2-pro', {
         status: 'running',
         startedAt: new Date().toISOString(),
       });
@@ -112,7 +112,22 @@ describe('browser reattach end-to-end (simulated)', () => {
             chromeHost: '127.0.0.1',
             chromeTargetId: 't-1',
             tabUrl: 'https://chatgpt.com/c/demo',
-            controllerPid: 999_999,
+            controllerPid: undefined,
+          },
+        },
+      });
+
+      const deadController = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+      await once(deadController, 'exit');
+      await sessionStore.updateSession(sessionMeta.id, {
+        browser: {
+          config: {},
+          runtime: {
+            chromePort: 51559,
+            chromeHost: '127.0.0.1',
+            chromeTargetId: 't-1',
+            tabUrl: 'https://chatgpt.com/c/demo',
+            controllerPid: deadController.pid ?? undefined,
           },
         },
       });
@@ -129,11 +144,7 @@ describe('browser reattach end-to-end (simulated)', () => {
       expect(resumeMock).toHaveBeenCalledTimes(1);
     } finally {
       await fs.rm(tmpHome, { recursive: true, force: true });
-      if (prevHome === undefined) {
-        delete process.env.ORACLE_HOME_DIR;
-      } else {
-        process.env.ORACLE_HOME_DIR = prevHome;
-      }
+      setOracleHomeDirOverrideForTest(null);
     }
   });
 });

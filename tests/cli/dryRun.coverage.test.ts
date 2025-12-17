@@ -6,7 +6,7 @@ const baseRunOptions: RunOracleOptions = {
   prompt: 'Do it',
   system: 'SYS',
   file: [],
-  model: 'gpt-5.1-pro',
+  model: 'gpt-5.2-pro',
 };
 
 describe('runDryRunSummary', () => {
@@ -19,7 +19,7 @@ describe('runDryRunSummary', () => {
       { readFilesImpl },
     );
 
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('[dry-run] Oracle (0.4.1) would call gpt-5.1-pro'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('[dry-run] Oracle (0.4.1) would call gpt-5.2-pro'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('No files matched'));
   });
 
@@ -32,6 +32,9 @@ describe('runDryRunSummary', () => {
       attachments: [{ path: '/tmp/bundle.txt', displayPath: '/tmp/bundle.txt', sizeBytes: 42 }],
       inlineFileCount: 0,
       tokenEstimateIncludesInlineFiles: false,
+      attachmentsPolicy: 'auto',
+      attachmentMode: 'bundle',
+      fallback: null,
       bundled: { originalCount: 3, bundlePath: '/tmp/bundle.txt' },
     });
 
@@ -66,6 +69,9 @@ describe('runDryRunSummary', () => {
       attachments: [],
       inlineFileCount: 2,
       tokenEstimateIncludesInlineFiles: true,
+      attachmentsPolicy: 'auto',
+      attachmentMode: 'inline',
+      fallback: null,
       bundled: null,
     });
 
@@ -95,6 +101,9 @@ describe('runDryRunSummary', () => {
       attachments: [],
       inlineFileCount: 0,
       tokenEstimateIncludesInlineFiles: false,
+      attachmentsPolicy: 'auto',
+      attachmentMode: 'inline',
+      fallback: null,
       bundled: null,
     });
 
@@ -124,6 +133,9 @@ describe('runDryRunSummary', () => {
       attachments: [{ path: '/tmp/file.txt', displayPath: 'file.txt', sizeBytes: 5 }],
       inlineFileCount: 0,
       tokenEstimateIncludesInlineFiles: false,
+      attachmentsPolicy: 'auto',
+      attachmentMode: 'upload',
+      fallback: null,
       bundled: null,
     });
 

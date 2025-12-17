@@ -1,15 +1,21 @@
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { assembleBrowserPrompt } from '../../src/browser/prompt.js';
-import { DEFAULT_SYSTEM_PROMPT } from '../../src/oracle.js';
+import { DEFAULT_SYSTEM_PROMPT, type MODEL_CONFIGS } from '../../src/oracle.js';
 import type { RunOracleOptions } from '../../src/oracle.js';
+
+const fastTokenizer: typeof MODEL_CONFIGS['gpt-5.1']['tokenizer'] = (messages) => {
+  const typed = messages as Array<{ content: string }>;
+  return typed.reduce((sum: number, message) => sum + Math.max(1, Math.ceil(message.content.length / 1000)), 0);
+};
 
 function buildOptions(overrides: Partial<RunOracleOptions> = {}): RunOracleOptions {
   return {
     prompt: overrides.prompt ?? 'Explain the bug',
-    model: overrides.model ?? 'gpt-5.1-pro',
+    model: overrides.model ?? 'gpt-5.2-pro',
     file: overrides.file ?? ['a.txt'],
     system: overrides.system,
+    browserAttachments: overrides.browserAttachments ?? 'auto',
     browserInlineFiles: overrides.browserInlineFiles,
   } as RunOracleOptions;
 }
@@ -26,16 +32,82 @@ describe('assembleBrowserPrompt', () => {
     expect(result.markdown).toContain('### File: a.txt');
     expect(result.markdown).toContain('```');
     expect(result.composerText).not.toContain(DEFAULT_SYSTEM_PROMPT);
-    expect(result.composerText).toBe('Explain the bug');
+    expect(result.composerText).toContain('Explain the bug');
     expect(result.composerText).not.toContain('[SYSTEM]');
     expect(result.composerText).not.toContain('[USER]');
-    expect(result.composerText).not.toContain('### File:');
+    expect(result.composerText).toContain('### File: a.txt');
     expect(result.estimatedInputTokens).toBeGreaterThan(0);
-    expect(result.attachments).toEqual([
-      expect.objectContaining({ path: '/repo/a.txt', displayPath: 'a.txt' }),
-    ]);
+    expect(result.attachments).toEqual([]);
+    expect(result.inlineFileCount).toBe(1);
+    expect(result.tokenEstimateIncludesInlineFiles).toBe(true);
+  });
+
+  test('auto mode uploads when inline composer exceeds ~60k chars', async () => {
+    const options = buildOptions({ prompt: 'Explain the bug', file: ['big.txt'], browserAttachments: 'auto' });
+    // Keep this just over the threshold; huge strings make tokenization slow on CI.
+    const huge = 'x'.repeat(62_000);
+    const result = await assembleBrowserPrompt(options, {
+      cwd: '/repo',
+      readFilesImpl: async () => [{ path: '/repo/big.txt', content: huge }],
+      tokenizeImpl: fastTokenizer,
+    });
+    expect(result.attachmentMode).toBe('upload');
+    expect(result.attachments).toEqual([expect.objectContaining({ path: '/repo/big.txt', displayPath: 'big.txt' })]);
     expect(result.inlineFileCount).toBe(0);
     expect(result.tokenEstimateIncludesInlineFiles).toBe(false);
+    expect(result.composerText).toBe('Explain the bug');
+    expect(result.composerText).not.toContain('### File: big.txt');
+    expect(result.fallback).toBeNull();
+  });
+
+  test('auto inline mode includes upload fallback', async () => {
+    const options = buildOptions({ prompt: 'Explain the bug', file: ['a.txt'], browserAttachments: 'auto' });
+    const result = await assembleBrowserPrompt(options, {
+      cwd: '/repo',
+      readFilesImpl: async () => [{ path: '/repo/a.txt', content: 'tiny' }],
+    });
+    expect(result.attachmentMode).toBe('inline');
+    expect(result.attachments).toEqual([]);
+    expect(result.inlineFileCount).toBe(1);
+    expect(result.fallback).toEqual(
+      expect.objectContaining({
+        composerText: 'Explain the bug',
+        attachments: [expect.objectContaining({ path: '/repo/a.txt', displayPath: 'a.txt' })],
+      }),
+    );
+  });
+
+  test('always mode forces uploads even when small', async () => {
+    const options = buildOptions({ prompt: 'Explain the bug', file: ['a.txt'], browserAttachments: 'always' });
+    const result = await assembleBrowserPrompt(options, {
+      cwd: '/repo',
+      readFilesImpl: async () => [{ path: '/repo/a.txt', content: 'tiny' }],
+    });
+    expect(result.attachmentMode).toBe('upload');
+    expect(result.attachments).toEqual([expect.objectContaining({ path: '/repo/a.txt', displayPath: 'a.txt' })]);
+    expect(result.composerText).toBe('Explain the bug');
+    expect(result.composerText).not.toContain('### File: a.txt');
+    expect(result.fallback).toBeNull();
+  });
+
+  test('legacy browserInlineFiles forces inline and disables auto fallback', async () => {
+    const options = buildOptions({
+      prompt: 'Explain the bug',
+      file: ['big.txt'],
+      browserInlineFiles: true,
+      browserAttachments: 'auto',
+    });
+    const huge = 'x'.repeat(62_000);
+    const result = await assembleBrowserPrompt(options, {
+      cwd: '/repo',
+      readFilesImpl: async () => [{ path: '/repo/big.txt', content: huge }],
+      tokenizeImpl: fastTokenizer,
+    });
+    expect(result.attachmentsPolicy).toBe('never');
+    expect(result.attachmentMode).toBe('inline');
+    expect(result.attachments).toEqual([]);
+    expect(result.composerText).toContain('### File: big.txt');
+    expect(result.fallback).toBeNull();
   });
 
   test('respects custom cwd and multiple files', async () => {
@@ -48,14 +120,10 @@ describe('assembleBrowserPrompt', () => {
     expect(result.markdown).toContain('### File: docs/one.md');
     expect(result.markdown).toContain('### File: docs/two.md');
     expect(result.markdown).toContain('```');
-    expect(result.composerText).not.toContain('### File: docs/one.md');
-    expect(result.composerText).not.toContain('### File: docs/two.md');
-    expect(result.attachments).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: path.resolve('/root/project', 'docs/one.md'), displayPath: 'docs/one.md' }),
-        expect.objectContaining({ path: path.resolve('/root/project', 'docs/two.md'), displayPath: 'docs/two.md' }),
-      ]),
-    );
+    expect(result.composerText).toContain('### File: docs/one.md');
+    expect(result.composerText).toContain('### File: docs/two.md');
+    expect(result.attachments).toEqual([]);
+    expect(result.inlineFileCount).toBe(2);
   });
 
   test('inlines files when browserInlineFiles enabled', async () => {
@@ -86,7 +154,7 @@ describe('assembleBrowserPrompt', () => {
   });
 
   test('inline file mode boosts estimate compared to prompt-only', async () => {
-    const readFilesImpl = async () => [{ path: '/repo/doc.md', content: 'inline payload' }];
+    const readFilesImpl = async (paths: string[]) => (paths.length > 0 ? [{ path: '/repo/doc.md', content: 'inline payload' }] : []);
     const promptOnly = await assembleBrowserPrompt(buildOptions({ file: [] }), { cwd: '/repo', readFilesImpl });
     const inline = await assembleBrowserPrompt(
       { ...buildOptions({ file: ['doc.md'] }), browserInlineFiles: true } as RunOracleOptions,
@@ -98,7 +166,7 @@ describe('assembleBrowserPrompt', () => {
 
   test('bundles attachments when more than 10 files', async () => {
     const fileNames = Array.from({ length: 11 }, (_, i) => `file${i + 1}.txt`);
-    const options = buildOptions({ file: fileNames });
+    const options = buildOptions({ file: fileNames, browserAttachments: 'always' });
     const result = await assembleBrowserPrompt(options, {
       cwd: '/repo',
       readFilesImpl: async (paths) =>

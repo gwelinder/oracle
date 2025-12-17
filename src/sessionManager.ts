@@ -1,4 +1,3 @@
-import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
@@ -7,6 +6,7 @@ import type { CookieParam } from './browser/types.js';
 import type { TransportFailureReason, AzureOptions, ModelName } from './oracle.js';
 import { DEFAULT_MODEL } from './oracle.js';
 import { safeModelSlug } from './oracle/modelResolver.js';
+import { getOracleHomeDir } from './oracleHome.js';
 
 export type SessionMode = 'api' | 'browser';
 
@@ -32,6 +32,7 @@ export interface BrowserSessionConfig {
   remoteChrome?: { host: string; port: number } | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
+  extendedThinking?: boolean;
 }
 
 export interface BrowserRuntimeMetadata {
@@ -82,6 +83,7 @@ export interface StoredRunOptions {
   browserConfig?: BrowserSessionConfig;
   verbose?: boolean;
   heartbeatIntervalMs?: number;
+  browserAttachments?: 'auto' | 'never' | 'always';
   browserInlineFiles?: boolean;
   browserBundleFiles?: boolean;
   background?: boolean;
@@ -162,8 +164,9 @@ interface InitializeSessionOptions extends StoredRunOptions {
   model: string;
 }
 
-const ORACLE_HOME = process.env.ORACLE_HOME_DIR ?? path.join(os.homedir(), '.oracle');
-const SESSIONS_DIR = path.join(ORACLE_HOME, 'sessions');
+export function getSessionsDir(): string {
+  return path.join(getOracleHomeDir(), 'sessions');
+}
 const METADATA_FILENAME = 'meta.json';
 const LEGACY_SESSION_FILENAME = 'session.json';
 const LEGACY_REQUEST_FILENAME = 'request.json';
@@ -182,7 +185,7 @@ async function ensureDir(dirPath: string): Promise<void> {
 }
 
 export async function ensureSessionStorage(): Promise<void> {
-  await ensureDir(SESSIONS_DIR);
+  await ensureDir(getSessionsDir());
 }
 
 function slugify(text: string | undefined, maxWords = MAX_SLUG_WORDS): string {
@@ -215,7 +218,7 @@ export function createSessionId(prompt: string, customSlug?: string): string {
 }
 
 function sessionDir(id: string): string {
-  return path.join(SESSIONS_DIR, id);
+  return path.join(getSessionsDir(), id);
 }
 
 function metaPath(id: string): string {
@@ -379,6 +382,7 @@ export async function initializeSession(
       browserConfig,
       verbose: options.verbose,
       heartbeatIntervalMs: options.heartbeatIntervalMs,
+      browserAttachments: options.browserAttachments,
       browserInlineFiles: options.browserInlineFiles,
       browserBundleFiles: options.browserBundleFiles,
       background: options.background,
@@ -487,7 +491,7 @@ export function createSessionLogWriter(sessionId: string, model?: string): Sessi
 
 export async function listSessionsMetadata(): Promise<SessionMetadata[]> {
   await ensureSessionStorage();
-  const entries = await fs.readdir(SESSIONS_DIR).catch(() => []);
+  const entries = await fs.readdir(getSessionsDir()).catch(() => []);
   const metas: SessionMetadata[] = [];
   for (const entry of entries) {
     let meta = await readSessionMetadata(entry);
@@ -586,7 +590,7 @@ export async function deleteSessionsOlderThan({
   includeAll = false,
 }: { hours?: number; includeAll?: boolean } = {}): Promise<{ deleted: number; remaining: number }> {
   await ensureSessionStorage();
-  const entries = await fs.readdir(SESSIONS_DIR).catch(() => []);
+  const entries = await fs.readdir(getSessionsDir()).catch(() => []);
   if (!entries.length) {
     return { deleted: 0, remaining: 0 };
   }
@@ -625,7 +629,7 @@ export async function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export { ORACLE_HOME, SESSIONS_DIR, MAX_STATUS_LIMIT };
+export { MAX_STATUS_LIMIT };
 export { ZOMBIE_MAX_AGE_MS };
 
 export async function getSessionPaths(sessionId: string): Promise<{

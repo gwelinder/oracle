@@ -1,4 +1,4 @@
-import { mkdtemp, rm, mkdir, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
@@ -20,22 +20,33 @@ import {
   ensurePromptReady,
   ensureModelSelection,
   submitPrompt,
+  clearPromptComposer,
   waitForAssistantResponse,
   captureAssistantMarkdown,
   uploadAttachmentFile,
   waitForAttachmentCompletion,
+  waitForUserTurnAttachments,
   readAssistantSnapshot,
 } from './pageActions.js';
 import { uploadAttachmentViaDataTransfer } from './actions/remoteFileTransfer.js';
+import { ensureExtendedThinking } from './actions/thinkingTime.js';
 import { estimateTokenCount, withRetries, delay } from './utils.js';
 import { formatElapsed } from '../oracle/format.js';
 import { CHATGPT_URL } from './constants.js';
 import type { LaunchedChrome } from 'chrome-launcher';
 import { BrowserAutomationError } from '../oracle/errors.js';
+import {
+  cleanupStaleProfileState,
+  readChromePid,
+  readDevToolsPort,
+  verifyDevToolsReachable,
+  writeChromePid,
+  writeDevToolsActivePort,
+} from './profileState.js';
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from './types.js';
 export { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
-export { parseDuration, delay, normalizeChatgptUrl } from './utils.js';
+export { parseDuration, delay, normalizeChatgptUrl, isTemporaryChatUrl } from './utils.js';
 
 export async function runBrowserMode(options: BrowserRunOptions): Promise<BrowserRunResult> {
   const promptText = options.prompt?.trim();
@@ -44,6 +55,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   }
 
   const attachments: BrowserAttachment[] = options.attachments ?? [];
+  const fallbackSubmission = options.fallbackSubmission;
 
   let config = resolveBrowserConfig(options.config);
   const logger: BrowserLogger = options.log ?? ((_message: string) => {});
@@ -134,9 +146,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger,
     ));
   const chromeHost = (chrome as unknown as { host?: string }).host ?? '127.0.0.1';
+  // Persist profile state so future manual-login runs can reuse this Chrome.
+  if (manualLogin && chrome.port) {
+    await writeDevToolsActivePort(userDataDir, chrome.port);
+    if (!reusedChrome && chrome.pid) {
+      await writeChromePid(userDataDir, chrome.pid);
+    }
+  }
   let removeTerminationHooks: (() => void) | null = null;
   try {
-    removeTerminationHooks = registerTerminationHooks(chrome, userDataDir, effectiveKeepBrowser, logger);
+    removeTerminationHooks = registerTerminationHooks(chrome, userDataDir, effectiveKeepBrowser, logger, {
+      isInFlight: () => runStatus !== 'complete',
+      emitRuntimeHint,
+    });
   } catch {
     // ignore failure; cleanup still happens below
   }
@@ -310,19 +332,58 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       logger(`Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`);
     }
-    if (attachments.length > 0) {
-      if (!DOM) {
-        throw new Error('Chrome DOM domain unavailable while uploading attachments.');
-      }
-      for (const attachment of attachments) {
-        logger(`Uploading attachment: ${attachment.displayPath}`);
-        await uploadAttachmentFile({ runtime: Runtime, dom: DOM }, attachment, logger);
-      }
-      const waitBudget = Math.max(config.inputTimeoutMs ?? 30_000, 30_000);
-      await raceWithDisconnect(waitForAttachmentCompletion(Runtime, waitBudget, logger));
-      logger('All attachments uploaded');
+    if (config.extendedThinking) {
+      await raceWithDisconnect(
+        withRetries(() => ensureExtendedThinking(Runtime, logger), {
+          retries: 2,
+          delayMs: 300,
+          onRetry: (attempt, error) => {
+            if (options.verbose) {
+              logger(`[retry] Extended thinking attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
+            }
+          },
+        }),
+      );
     }
-    await raceWithDisconnect(submitPrompt({ runtime: Runtime, input: Input }, promptText, logger));
+    const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
+      if (submissionAttachments.length > 0) {
+        if (!DOM) {
+          throw new Error('Chrome DOM domain unavailable while uploading attachments.');
+        }
+        for (const attachment of submissionAttachments) {
+          logger(`Uploading attachment: ${attachment.displayPath}`);
+          await uploadAttachmentFile({ runtime: Runtime, dom: DOM }, attachment, logger);
+        }
+        // Scale timeout based on number of files: base 30s + 15s per additional file
+        const baseTimeout = config.inputTimeoutMs ?? 30_000;
+        const perFileTimeout = 15_000;
+        const waitBudget = Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
+        await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
+        logger('All attachments uploaded');
+      }
+      await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, prompt, logger);
+      if (attachmentNames.length > 0) {
+        await waitForUserTurnAttachments(Runtime, attachmentNames, 20_000, logger);
+        logger('Verified attachments present on sent user message');
+      }
+    };
+
+    try {
+      await raceWithDisconnect(submitOnce(promptText, attachments));
+    } catch (error) {
+      const isPromptTooLarge =
+        error instanceof BrowserAutomationError &&
+        (error.details as { code?: string } | undefined)?.code === 'prompt-too-large';
+      if (fallbackSubmission && isPromptTooLarge) {
+        logger('[browser] Inline prompt too large; retrying with file uploads.');
+        await raceWithDisconnect(clearPromptComposer(Runtime, logger));
+        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        await raceWithDisconnect(submitOnce(fallbackSubmission.prompt, fallbackSubmission.attachments));
+      } else {
+        throw error;
+      }
+    }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
     const answer = await raceWithDisconnect(waitForAssistantResponse(Runtime, config.timeoutMs, logger));
     answerText = answer.text;
@@ -350,10 +411,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       ),
     ).catch(() => null);
     answerMarkdown = copiedMarkdown ?? answerText;
+
+    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
+    const normalizeForComparison = (text: string): string =>
+      text.toLowerCase().replace(/\s+/g, ' ').trim();
+
     // Final sanity check: ensure we didn't accidentally capture the user prompt instead of the assistant turn.
     const finalSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
     const finalText = typeof finalSnapshot?.text === 'string' ? finalSnapshot.text.trim() : '';
     if (
+      !copiedMarkdown &&
       finalText &&
       finalText !== answerMarkdown.trim() &&
       finalText !== promptText.trim() &&
@@ -363,17 +430,32 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       answerText = finalText;
       answerMarkdown = finalText;
     }
-    if (answerMarkdown.trim() === promptText.trim()) {
-      const deadline = Date.now() + 8_000;
-      let bestText: string | null = null;
-      let stableCount = 0;
+	    // Detect prompt echo using normalized comparison (whitespace-insensitive)
+	    const normalizedAnswer = normalizeForComparison(answerMarkdown);
+	    const normalizedPrompt = normalizeForComparison(promptText);
+	    const promptPrefix =
+	      normalizedPrompt.length >= 80
+	        ? normalizedPrompt.slice(0, Math.min(200, normalizedPrompt.length))
+	        : '';
+	    const isPromptEcho =
+	      normalizedAnswer === normalizedPrompt || (promptPrefix.length > 0 && normalizedAnswer.startsWith(promptPrefix));
+	    if (isPromptEcho) {
+	      logger('Detected prompt echo in response; waiting for actual assistant response...');
+	      const deadline = Date.now() + 8_000;
+	      let bestText: string | null = null;
+	      let stableCount = 0;
       while (Date.now() < deadline) {
         const snapshot = await readAssistantSnapshot(Runtime).catch(() => null);
         const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
-        if (text && text !== promptText.trim()) {
-          if (!bestText || text.length > bestText.length) {
-            bestText = text;
-            stableCount = 0;
+	        const normalizedText = normalizeForComparison(text);
+	        const isStillEcho =
+	          !text ||
+	          normalizedText === normalizedPrompt ||
+	          (promptPrefix.length > 0 && normalizedText.startsWith(promptPrefix));
+	        if (!isStillEcho) {
+	          if (!bestText || text.length > bestText.length) {
+	            bestText = text;
+	            stableCount = 0;
           } else if (text === bestText) {
             stableCount += 1;
           }
@@ -586,53 +668,25 @@ async function _assertNavigatedToHttp(
 async function maybeReuseRunningChrome(userDataDir: string, logger: BrowserLogger): Promise<LaunchedChrome | null> {
   const port = await readDevToolsPort(userDataDir);
   if (!port) return null;
-  const versionUrl = `http://127.0.0.1:${port}/json/version`;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1500);
-    const response = await fetch(versionUrl, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const pidPath = path.join(userDataDir, 'chrome.pid');
-    let pid: number | undefined;
-    try {
-      const rawPid = (await readFile(pidPath, 'utf8')).trim();
-      pid = Number.parseInt(rawPid, 10);
-      if (Number.isNaN(pid)) pid = undefined;
-    } catch {
-      pid = undefined;
-    }
-    logger(`Found running Chrome for ${userDataDir}; reusing (DevTools port ${port}${pid ? `, pid ${pid}` : ''})`);
-    return {
-      port,
-      pid,
-      kill: async () => {},
-      process: undefined,
-    } as unknown as LaunchedChrome;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger(`DevToolsActivePort found for ${userDataDir} but unreachable (${message}); launching new Chrome.`);
+
+  const probe = await verifyDevToolsReachable({ port });
+  if (!probe.ok) {
+    logger(`DevToolsActivePort found for ${userDataDir} but unreachable (${probe.error}); launching new Chrome.`);
+    // Safe cleanup: remove stale DevToolsActivePort; only remove lock files if this was an Oracle-owned pid that died.
+    await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: 'if_oracle_pid_dead' });
     return null;
   }
-}
 
-async function readDevToolsPort(userDataDir: string): Promise<number | null> {
-  const candidates = [
-    path.join(userDataDir, 'DevToolsActivePort'),
-    path.join(userDataDir, 'Default', 'DevToolsActivePort'),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const raw = await readFile(candidate, 'utf8');
-      const firstLine = raw.split(/\r?\n/u)[0]?.trim();
-      const port = Number.parseInt(firstLine ?? '', 10);
-      if (Number.isFinite(port)) {
-        return port;
-      }
-    } catch {
-    }
-  }
-  return null;
+  const pid = await readChromePid(userDataDir);
+  logger(
+    `Found running Chrome for ${userDataDir}; reusing (DevTools port ${port}${pid ? `, pid ${pid}` : ''})`,
+  );
+  return {
+    port,
+    pid: pid ?? undefined,
+    kill: async () => {},
+    process: undefined,
+  } as unknown as LaunchedChrome;
 }
 
 async function runRemoteBrowserMode(
@@ -729,22 +783,54 @@ async function runRemoteBrowserMode(
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
       logger(`Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`);
     }
-
-    if (attachments.length > 0) {
-      if (!DOM) {
-        throw new Error('Chrome DOM domain unavailable while uploading attachments.');
-      }
-      // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
-      for (const attachment of attachments) {
-        logger(`Uploading attachment: ${attachment.displayPath}`);
-        await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
-      }
-      const waitBudget = Math.max(config.inputTimeoutMs ?? 30_000, 30_000);
-      await waitForAttachmentCompletion(Runtime, waitBudget, logger);
-      logger('All attachments uploaded');
+    if (config.extendedThinking) {
+      await withRetries(() => ensureExtendedThinking(Runtime, logger), {
+        retries: 2,
+        delayMs: 300,
+        onRetry: (attempt, error) => {
+          if (options.verbose) {
+            logger(`[retry] Extended thinking attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
+          }
+        },
+      });
     }
 
-    await submitPrompt({ runtime: Runtime, input: Input }, promptText, logger);
+    const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
+      if (submissionAttachments.length > 0) {
+        if (!DOM) {
+          throw new Error('Chrome DOM domain unavailable while uploading attachments.');
+        }
+        // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
+        for (const attachment of submissionAttachments) {
+          logger(`Uploading attachment: ${attachment.displayPath}`);
+          await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
+        }
+        // Scale timeout based on number of files: base 30s + 15s per additional file
+        const baseTimeout = config.inputTimeoutMs ?? 30_000;
+        const perFileTimeout = 15_000;
+        const waitBudget = Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
+        await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
+        logger('All attachments uploaded');
+      }
+      await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, prompt, logger);
+    };
+
+    try {
+      await submitOnce(promptText, attachments);
+    } catch (error) {
+      const isPromptTooLarge =
+        error instanceof BrowserAutomationError &&
+        (error.details as { code?: string } | undefined)?.code === 'prompt-too-large';
+      if (options.fallbackSubmission && isPromptTooLarge) {
+        logger('[browser] Inline prompt too large; retrying with file uploads.');
+        await clearPromptComposer(Runtime, logger);
+        await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+        await submitOnce(options.fallbackSubmission.prompt, options.fallbackSubmission.attachments);
+      } else {
+        throw error;
+      }
+    }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
     const answer = await waitForAssistantResponse(Runtime, config.timeoutMs, logger);
     answerText = answer.text;
@@ -772,6 +858,65 @@ async function runRemoteBrowserMode(
     ).catch(() => null);
 
     answerMarkdown = copiedMarkdown ?? answerText;
+
+    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
+    const normalizeForComparison = (text: string): string =>
+      text.toLowerCase().replace(/\s+/g, ' ').trim();
+
+    // Final sanity check: ensure we didn't accidentally capture the user prompt instead of the assistant turn.
+    const finalSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+    const finalText = typeof finalSnapshot?.text === 'string' ? finalSnapshot.text.trim() : '';
+    if (
+      finalText &&
+      finalText !== answerMarkdown.trim() &&
+      finalText !== promptText.trim() &&
+      finalText.length >= answerMarkdown.trim().length
+    ) {
+      logger('Refreshed assistant response via final DOM snapshot');
+      answerText = finalText;
+      answerMarkdown = finalText;
+    }
+	    // Detect prompt echo using normalized comparison (whitespace-insensitive)
+	    const normalizedAnswer = normalizeForComparison(answerMarkdown);
+	    const normalizedPrompt = normalizeForComparison(promptText);
+	    const promptPrefix =
+	      normalizedPrompt.length >= 80
+	        ? normalizedPrompt.slice(0, Math.min(200, normalizedPrompt.length))
+	        : '';
+	    const isPromptEcho =
+	      normalizedAnswer === normalizedPrompt || (promptPrefix.length > 0 && normalizedAnswer.startsWith(promptPrefix));
+	    if (isPromptEcho) {
+	      logger('Detected prompt echo in response; waiting for actual assistant response...');
+	      const deadline = Date.now() + 8_000;
+	      let bestText: string | null = null;
+	      let stableCount = 0;
+      while (Date.now() < deadline) {
+        const snapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+        const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
+	        const normalizedText = normalizeForComparison(text);
+	        const isStillEcho =
+	          !text ||
+	          normalizedText === normalizedPrompt ||
+	          (promptPrefix.length > 0 && normalizedText.startsWith(promptPrefix));
+	        if (!isStillEcho) {
+	          if (!bestText || text.length > bestText.length) {
+	            bestText = text;
+	            stableCount = 0;
+          } else if (text === bestText) {
+            stableCount += 1;
+          }
+          if (stableCount >= 2) {
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      if (bestText) {
+        logger('Recovered assistant response after detecting prompt echo');
+        answerText = bestText;
+        answerMarkdown = bestText;
+      }
+    }
     stopThinkingMonitor?.();
 
     const durationMs = Date.now() - startedAt;

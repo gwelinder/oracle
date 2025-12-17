@@ -21,6 +21,20 @@ and run the live API suite before shipping major transport changes.
 
 - `./runner pnpm test:browser` — launches headful Chrome and checks the DevTools endpoint is reachable. Set `ORACLE_BROWSER_PORT` (or `ORACLE_BROWSER_DEBUG_PORT`) to reuse a fixed port when you’ve already opened a firewall rule.
 
+### Gemini browser mode (Gemini web / cookies)
+
+Run this whenever you touch the Gemini web client or the `--generate-image` / `--edit-image` plumbing.
+
+Prereqs:
+- Chrome profile is signed into `gemini.google.com`.
+
+1. Generate an image:
+   `pnpm run oracle -- --engine browser --model gemini-3-pro --prompt "a cute robot holding a banana" --generate-image /tmp/gemini-gen.jpg --aspect 1:1 --wait --verbose`
+   - Confirm the output file exists and is a real image (`file /tmp/gemini-gen.jpg`).
+2. Edit an image:
+   `pnpm run oracle -- --engine browser --model gemini-3-pro --prompt "add sunglasses" --edit-image /tmp/gemini-gen.jpg --output /tmp/gemini-edit.jpg --wait --verbose`
+   - Confirm `/tmp/gemini-edit.jpg` exists.
+
 ### Multi-Model CLI fan-out
 
 Run this whenever you touch the session store, CLI session views, or TUI wiring for multi-model runs.
@@ -74,7 +88,7 @@ This mirrors Mario Zechner’s “What if you don’t need MCP?” technique and
    - Temporarily move `node_modules/.pnpm/sqlite3@*/node_modules/sqlite3` out of the way.
    - Run  
      ```bash
-     pnpm run oracle -- --engine browser --model "5.1 Instant" --prompt "Smoke test cookie sync."
+     pnpm run oracle -- --engine browser --model "GPT-5.2" --prompt "Smoke test cookie sync."
      ```
    - Expect an early failure: `Unable to derive Chrome cookie key` (or a sqlite binding hint) because the cookie reader can’t load sqlite.  
    - Restore `sqlite3` and rebuild; rerun to confirm cookies copy successfully (`Copied N cookies from Chrome profile Default`).
@@ -82,19 +96,19 @@ This mirrors Mario Zechner’s “What if you don’t need MCP?” technique and
 2. **Prompt Submission & Model Switching**
    - With sqlite bindings healthy, run  
      ```bash
-     pnpm run oracle -- --engine browser --model "5.1 Instant" \
+     pnpm run oracle -- --engine browser --model "GPT-5.2" \
        --prompt "Line 1\nLine 2\nLine 3"
      ```
    - Observe logs for:
      - `Prompt textarea ready (xxx chars queued)` (twice: initial + after model switch).
-     - `Model picker: ... Instant...`.
+     - `Model picker: ... 5.2 ...`.
      - `Clicked send button` (or Enter fallback).
    - In the attached Chrome window, verify the multi-line prompt appears exactly as sent.
 
 3. **Markdown Capture**
    - Prompt:
      ```bash
-     pnpm run oracle -- --engine browser --model "5.1 Instant" \
+     pnpm run oracle -- --engine browser --model "GPT-5.2" \
        --prompt "Produce a short bullet list with code fencing."
      ```
    - Expected CLI output:
@@ -132,22 +146,22 @@ Document results (pass/fail, session IDs) in PR descriptions so reviewers can au
 
 Run these four smoke tests whenever we touch browser automation:
 
-1. **GPT-5.1 simple prompt**  
-   `pnpm run oracle -- --engine browser --model "5.1 Instant" --prompt "Give me two short markdown bullet points about tables"`  
+1. **GPT-5.2 simple prompt**  
+   `pnpm run oracle -- --engine browser --model "GPT-5.2" --prompt "Give me two short markdown bullet points about tables"`  
    Expect two markdown bullets, no files/search referenced. Note the session ID (e.g., `give-me-two-short-markdown`).
 
-2. **GPT-5.1 Pro simple prompt**  
-   `pnpm run oracle -- --engine browser --model gpt-5.1-pro --prompt "List two reasons Markdown is handy"`  
-   Confirm the answer arrives (and only once) even if it takes ~2–3 minutes; heartbeat lines should show up while waiting.
+2. **GPT-5.2 simple prompt**  
+   `pnpm run oracle -- --engine browser --model gpt-5.2 --prompt "List two reasons Markdown is handy"`  
+   Confirm the answer arrives (and only once) even if it takes ~2–3 minutes.
 
-3. **GPT-5.1 + attachment**  
+3. **GPT-5.2 + attachment**  
    Prepare `/tmp/browser-md.txt` with a short note, then run  
-   `pnpm run oracle -- --engine browser --model "5.1 Instant" --prompt "Summarize the key idea from the attached note" --file /tmp/browser-md.txt`  
+   `pnpm run oracle -- --engine browser --model "GPT-5.2" --prompt "Summarize the key idea from the attached note" --file /tmp/browser-md.txt`  
    Ensure upload logs show “Attachment queued” and the answer references the file contents explicitly.
 
-4. **GPT-5.1 Pro + attachment**  
+4. **GPT-5.2 + attachment (verbose)**  
    Prepare `/tmp/browser-report.txt` with faux metrics, then run  
-   `pnpm run oracle -- --engine browser --model gpt-5.1-pro --prompt "Use the attachment to report current CPU and memory figures" --file /tmp/browser-report.txt --verbose`  
+   `pnpm run oracle -- --engine browser --model gpt-5.2 --prompt "Use the attachment to report current CPU and memory figures" --file /tmp/browser-report.txt --verbose`  
    Verify verbose logs show attachment upload and the final answer matches the file data.
 
 Record session IDs and outcomes in the PR description (pass/fail, notable delays). This ensures reviewers can audit real runs.
@@ -192,7 +206,7 @@ Use this when you need to inspect the live ChatGPT composer (DOM state, markdown
    ```bash
    tmux new -d -s oracle-browser \\
      "pnpm run oracle -- --engine browser --browser-keep-browser \\
-       --model '5.1 Instant' --prompt 'Debug via DevTools.'"
+       --model 'GPT-5.2 Pro' --prompt 'Debug via DevTools.'"
    ```
    Keeping the run in tmux prevents your shell from blocking and ensures Chrome stays open afterward.
 
@@ -242,9 +256,9 @@ These Vitest cases hit the real OpenAI API to exercise both transports:
    export ORACLE_LIVE_TEST=1
    pnpm vitest run tests/live/openai-live.test.ts
    ```
-2. The first test sends a GPT-5.1 Pro prompt and expects the CLI to stay in
-   background mode until OpenAI finishes (up to 30 minutes). The second test
-   targets the standard GPT-5 (gpt-5.1) path with foreground streaming.
+2. The first test sends a `gpt-5.1-pro` prompt (API: `gpt-5.2-pro`) and expects the CLI to stay
+   in background mode until OpenAI finishes (up to 30 minutes). The second test
+   targets the standard GPT-5 (`gpt-5.1`) path with foreground streaming.
 3. Watch the console for `Reconnected to OpenAI background response...` if
    you're debugging transport flakiness; the test will fail if the response
    status isn't `completed` or if the text doesn't contain the hard-coded

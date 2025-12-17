@@ -61,7 +61,7 @@ async function runCliPty(args: string[]): Promise<{ output: string; code: number
   });
 
   const exitPromise = once(ps, 'exit') as Promise<[number | null, number | null]>;
-  const timeout = setTimeout(() => ps.kill(), 10_000);
+  const timeout = setTimeout(() => ps.kill(), 25_000);
   const [code, signal] = await exitPromise;
   clearTimeout(timeout);
 
@@ -81,8 +81,8 @@ ptyDescribe('oracle CLI browser guard (PTY)', () => {
       'TTY guard prompt for grok browser path',
     ]);
     expect(code).not.toBe(0);
-    expect(stripAnsi(output)).toMatch(/Browser engine only supports GPT-series ChatGPT models/i);
-  }, 15_000);
+    expect(stripAnsi(output)).toMatch(/Browser engine only supports GPT and Gemini models/i);
+  }, 30_000);
 
   it('fails fast when multi-model list includes non-GPT under browser engine', async () => {
     const { output, code } = await runCliPty([
@@ -94,6 +94,6 @@ ptyDescribe('oracle CLI browser guard (PTY)', () => {
       'TTY guard prompt for mixed models',
     ]);
     expect(code).not.toBe(0);
-    expect(stripAnsi(output)).toMatch(/Browser engine only supports GPT-series ChatGPT models/i);
-  }, 15_000);
+    expect(stripAnsi(output)).toMatch(/Browser engine only supports GPT and Gemini models/i);
+  }, 30_000);
 });

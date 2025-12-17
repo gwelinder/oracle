@@ -6,6 +6,7 @@ import { resolveEngine } from './engine.js';
 import { normalizeModelOption, inferModelFromLabel, resolveApiModel, normalizeBaseUrl } from './options.js';
 import { resolveGeminiModelId } from '../oracle/gemini.js';
 import { PromptValidationError } from '../oracle/errors.js';
+import { normalizeChatGptModelForBrowser } from './browserConfig.js';
 
 export interface ResolveRunOptionsInput {
   prompt: string;
@@ -39,11 +40,12 @@ export function resolveRunOptionsFromConfig({
   const normalizedRequestedModels = requestedModelList.map((entry) => normalizeModelOption(entry)).filter(Boolean);
 
   const cliModelArg = normalizeModelOption(model ?? userConfig?.model) || DEFAULT_MODEL;
-  const resolvedModel =
+  const inferredModel =
     resolvedEngine === 'browser' && normalizedRequestedModels.length === 0
       ? inferModelFromLabel(cliModelArg)
       : resolveApiModel(cliModelArg);
-  const isGemini = resolvedModel.startsWith('gemini');
+  // Browser engine maps Pro/legacy aliases to the latest ChatGPT picker targets (GPT-5.2 / GPT-5.2 Pro).
+  const resolvedModel = resolvedEngine === 'browser' ? normalizeChatGptModelForBrowser(inferredModel) : inferredModel;
   const isCodex = resolvedModel.startsWith('gpt-5.1-codex');
   const isClaude = resolvedModel.startsWith('claude');
   const isGrok = resolvedModel.startsWith('grok');
@@ -53,18 +55,18 @@ export function resolveRunOptionsFromConfig({
     normalizedRequestedModels.length > 0
       ? Array.from(new Set(normalizedRequestedModels.map((entry) => resolveApiModel(entry))))
       : [resolvedModel];
-  const hasNonGptBrowserTarget = (browserRequested || browserConfigured) && allModels.some((m) => !m.startsWith('gpt-'));
-  if (hasNonGptBrowserTarget) {
+  const isBrowserCompatible = (m: string) => m.startsWith('gpt-') || m.startsWith('gemini');
+  const hasNonBrowserCompatibleTarget = (browserRequested || browserConfigured) && allModels.some((m) => !isBrowserCompatible(m));
+  if (hasNonBrowserCompatibleTarget) {
     throw new PromptValidationError(
-      'Browser engine only supports GPT-series ChatGPT models. Re-run with --engine api for Grok, Claude, Gemini, or other non-GPT models.',
+      'Browser engine only supports GPT and Gemini models. Re-run with --engine api for Grok, Claude, or other models.',
       { engine: 'browser', models: allModels },
     );
   }
 
-  const engineCoercedToApi = engineWasBrowser && (isGemini || isCodex || isClaude || isGrok);
-  // When Gemini, Claude, or Grok is selected, force API engine for auto-browser detection; codex also forces API.
+  const engineCoercedToApi = engineWasBrowser && (isCodex || isClaude || isGrok);
   const fixedEngine: EngineMode =
-    isGemini || isCodex || isClaude || isGrok || normalizedRequestedModels.length > 0 ? 'api' : resolvedEngine;
+    isCodex || isClaude || isGrok || normalizedRequestedModels.length > 0 ? 'api' : resolvedEngine;
 
   const promptWithSuffix =
     userConfig?.promptSuffix && userConfig.promptSuffix.trim().length > 0

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ChromeClient, BrowserAttachment, BrowserLogger } from '../types.js';
 import { FILE_INPUT_SELECTORS } from '../constants.js';
+import { waitForAttachmentVisible } from './attachments.js';
 import { delay } from '../utils.js';
 import { logDomFailure } from '../domDebug.js';
 
@@ -155,6 +156,7 @@ export async function uploadAttachmentViaDataTransfer(
 
   // Give ChatGPT a moment to process the file
   await delay(500);
+  await waitForAttachmentVisible(runtime, fileName, 10_000, logger);
 
   logger('Attachment queued');
 }

@@ -43,4 +43,31 @@ describe('applyBrowserDefaultsFromConfig', () => {
 
     expect(options.chatgptUrl).toBe('https://chatgpt.com/g/g-p-bar/project');
   });
+
+  test('applies chrome defaults when CLI flags are untouched or defaulted', () => {
+    const options: BrowserDefaultsOptions = {};
+    const config: UserConfig = {
+      browser: {
+        chromePath: '/Applications/Comet.app/Contents/MacOS/Comet',
+        chromeProfile: 'Work',
+        chromeCookiePath: '/tmp/cookies',
+        timeoutMs: 120_000,
+        inputTimeoutMs: 15_000,
+        headless: true,
+        hideWindow: true,
+        keepBrowser: true,
+      },
+    };
+
+    applyBrowserDefaultsFromConfig(options, config, (_key) => 'default');
+
+    expect(options.browserChromePath).toBe('/Applications/Comet.app/Contents/MacOS/Comet');
+    expect(options.browserChromeProfile).toBe('Work');
+    expect(options.browserCookiePath).toBe('/tmp/cookies');
+    expect(options.browserTimeout).toBe('120000');
+    expect(options.browserInputTimeout).toBe('15000');
+    expect(options.browserHeadless).toBe(true);
+    expect(options.browserHideWindow).toBe(true);
+    expect(options.browserKeepBrowser).toBe(true);
+  });
 });

@@ -1,5 +1,5 @@
 export const CHATGPT_URL = 'https://chatgpt.com/';
-export const DEFAULT_MODEL_TARGET = 'ChatGPT 5.1';
+export const DEFAULT_MODEL_TARGET = 'GPT-5.2 Pro';
 export const COOKIE_URLS = ['https://chatgpt.com', 'https://chat.openai.com', 'https://atlas.openai.com'];
 
 export const INPUT_SELECTORS = [
@@ -15,14 +15,18 @@ export const INPUT_SELECTORS = [
 
 export const ANSWER_SELECTORS = [
   'article[data-testid^="conversation-turn"][data-message-author-role="assistant"]',
+  'article[data-testid^="conversation-turn"][data-turn="assistant"]',
   'article[data-testid^="conversation-turn"] [data-message-author-role="assistant"]',
+  'article[data-testid^="conversation-turn"] [data-turn="assistant"]',
   'article[data-testid^="conversation-turn"] .markdown',
   '[data-message-author-role="assistant"] .markdown',
+  '[data-turn="assistant"] .markdown',
   '[data-message-author-role="assistant"]',
+  '[data-turn="assistant"]',
 ];
 
 export const CONVERSATION_TURN_SELECTOR = 'article[data-testid^="conversation-turn"]';
-export const ASSISTANT_ROLE_SELECTOR = '[data-message-author-role="assistant"]';
+export const ASSISTANT_ROLE_SELECTOR = '[data-message-author-role="assistant"], [data-turn="assistant"]';
 export const CLOUDFLARE_SCRIPT_SELECTOR = 'script[src*="/challenge-platform/"]';
 export const CLOUDFLARE_TITLE = 'just a moment';
 export const PROMPT_PRIMARY_SELECTOR = '#prompt-textarea';
@@ -32,6 +36,9 @@ export const FILE_INPUT_SELECTORS = [
   'input[type="file"][multiple]:not([accept])',
   'input[type="file"][multiple]',
   'input[type="file"]:not([accept])',
+  'form input[type="file"][accept]',
+  'input[type="file"][accept]',
+  'input[type="file"]',
   'input[type="file"][data-testid*="file"]',
 ];
 // Legacy single selectors kept for compatibility with older call-sites
@@ -52,11 +59,11 @@ export const UPLOAD_STATUS_SELECTORS = [
 
 export const STOP_BUTTON_SELECTOR = '[data-testid="stop-button"]';
 export const SEND_BUTTON_SELECTORS = [
-  '[data-testid="send-button"]',
-  'button[data-testid="composer-send-button"]',
-  'button[aria-label="Send message"]',
-  'button[aria-label*="Send"]',
+  'button[data-testid="send-button"]',
+  'button[data-testid*="composer-send"]',
+  'form button[type="submit"]',
   'button[type="submit"][data-testid*="send"]',
+  'button[aria-label*="Send"]',
 ];
 export const SEND_BUTTON_SELECTOR = SEND_BUTTON_SELECTORS[0];
 export const MODEL_BUTTON_SELECTOR = '[data-testid="model-switcher-dropdown-button"]';

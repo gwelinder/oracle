@@ -4,7 +4,7 @@ import type { RunOracleOptions } from '../../src/oracle.js';
 
 const baseRunOptions: RunOracleOptions = {
   prompt: 'Explain the issue',
-  model: 'gpt-5.1-pro',
+  model: 'gpt-5.2-pro',
   file: [],
 };
 
@@ -23,7 +23,7 @@ describe('runDryRunSummary', () => {
         readFilesImpl: async () => [{ path: '/repo/notes.md', content: 'console.log("dry run")' }],
       },
     );
-    const header = log.mock.calls.find(([entry]) => String(entry).includes('would call gpt-5.1-pro'));
+    const header = log.mock.calls.find(([entry]) => String(entry).includes('would call gpt-5.2-pro'));
     expect(header?.[0]).toContain('[dry-run]');
     expect(log.mock.calls.some(([entry]) => String(entry).includes('File Token Usage'))).toBe(true);
   });
@@ -63,6 +63,9 @@ describe('runDryRunSummary', () => {
           attachments: [{ path: '/repo/report.txt', displayPath: 'report.txt', sizeBytes: 2048 }],
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'upload',
+          fallback: null,
         }),
       },
     );
@@ -111,6 +114,9 @@ describe('runDryRunSummary', () => {
           attachments: [],
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'inline',
+          fallback: null,
         }),
       },
     );

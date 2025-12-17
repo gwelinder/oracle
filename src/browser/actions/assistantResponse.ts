@@ -9,6 +9,7 @@ import {
 } from '../constants.js';
 import { delay } from '../utils.js';
 import { logDomFailure, logConversationSnapshot, buildConversationDebugExpression } from '../domDebug.js';
+import { buildClickDispatcher } from './domEvents.js';
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = 'assistant-response-watchdog-timeout';
 
@@ -17,6 +18,7 @@ export async function waitForAssistantResponse(
   timeoutMs: number,
   logger: BrowserLogger,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } }> {
+  const start = Date.now();
   logger('Waiting for ChatGPT response');
   const expression = buildResponseObserverExpression(timeoutMs);
   const evaluationPromise = Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
@@ -80,7 +82,25 @@ export async function waitForAssistantResponse(
   }
 
   const refreshed = await refreshAssistantSnapshot(Runtime, parsed, logger);
-  return refreshed ?? parsed;
+  const candidate = refreshed ?? parsed;
+  // The evaluation path can race ahead of completion. If ChatGPT is still streaming, wait for the watchdog poller.
+  const elapsedMs = Date.now() - start;
+  const remainingMs = Math.max(0, timeoutMs - elapsedMs);
+  if (remainingMs > 0) {
+    const [stopVisible, completionVisible] = await Promise.all([
+      isStopButtonVisible(Runtime),
+      isCompletionVisible(Runtime),
+    ]);
+    if (stopVisible && !completionVisible) {
+      logger('Assistant still generating; waiting for completion');
+      const completed = await pollAssistantCompletion(Runtime, remainingMs);
+      if (completed) {
+        return completed;
+      }
+    }
+  }
+
+  return candidate;
 }
 
 export async function readAssistantSnapshot(Runtime: ChromeClient['Runtime']): Promise<AssistantSnapshot | null> {
@@ -159,11 +179,16 @@ async function parseAssistantEvaluationResult(
       typeof (result.value as { messageId?: unknown }).messageId === 'string'
         ? ((result.value as { messageId?: string }).messageId ?? undefined)
         : undefined;
-    return {
-      text: cleanAssistantText(String((result.value as { text: unknown }).text ?? '')),
-      html,
-      meta: { turnId, messageId },
-    };
+    const text = cleanAssistantText(String((result.value as { text: unknown }).text ?? ''));
+    const normalized = text.toLowerCase();
+    if (
+      normalized.includes('answer now') &&
+      (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))
+    ) {
+      const recovered = await recoverAssistantResponse(Runtime, Math.min(timeoutMs, 10_000), logger);
+      return recovered ?? null;
+    }
+    return { text, html, meta: { turnId, messageId } };
   }
   const fallbackText = typeof result.value === 'string' ? cleanAssistantText(result.value as string) : '';
   if (!fallbackText) {
@@ -232,7 +257,9 @@ async function pollAssistantCompletion(
         isStopButtonVisible(Runtime),
         isCompletionVisible(Runtime),
       ]);
-      if (completionVisible || (!stopVisible && stableCycles >= requiredStableCycles)) {
+      // Require at least 2 stable cycles even when completion buttons are visible
+      // to ensure DOM text has fully rendered (buttons can appear before text settles)
+      if ((completionVisible && stableCycles >= 2) || (!stopVisible && stableCycles >= requiredStableCycles)) {
         return normalized;
       }
     } else {
@@ -260,10 +287,38 @@ async function isCompletionVisible(Runtime: ChromeClient['Runtime']): Promise<bo
   try {
     const { result } = await Runtime.evaluate({
       expression: `(() => {
-        if (document.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
+        // Find the LAST assistant turn to check completion status
+        // Must match the same logic as buildAssistantExtractor for consistency
+        const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
+        const isAssistantTurn = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+          if (turnAttr === 'assistant') return true;
+          const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+          if (role === 'assistant') return true;
+          const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+          if (testId.includes('assistant')) return true;
+          return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+        };
+
+        const turns = Array.from(document.querySelectorAll('${CONVERSATION_TURN_SELECTOR}'));
+        let lastAssistantTurn = null;
+        for (let i = turns.length - 1; i >= 0; i--) {
+          if (isAssistantTurn(turns[i])) {
+            lastAssistantTurn = turns[i];
+            break;
+          }
+        }
+        if (!lastAssistantTurn) {
+          return false;
+        }
+        // Check if the last assistant turn has finished action buttons (copy, thumbs up/down, share)
+        if (lastAssistantTurn.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
           return true;
         }
-        return Array.from(document.querySelectorAll('.markdown')).some((n) => (n.textContent || '').trim() === 'Done');
+        // Also check for "Done" text in the last assistant turn's markdown
+        const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
+        return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
       })()`,
       returnByValue: true,
     });
@@ -278,6 +333,12 @@ function normalizeAssistantSnapshot(
 ): { text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null {
   const text = snapshot?.text ? cleanAssistantText(snapshot.text) : '';
   if (!text.trim()) {
+    return null;
+  }
+  const normalized = text.toLowerCase();
+  // "Pro thinking" often renders a placeholder turn containing an "Answer now" gate.
+  // Treat it as incomplete so browser mode keeps waiting for the real assistant text.
+  if (normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
     return null;
   }
   return {
@@ -312,11 +373,33 @@ function buildAssistantSnapshotExpression(): string {
 
 function buildResponseObserverExpression(timeoutMs: number): string {
   const selectorsLiteral = JSON.stringify(ANSWER_SELECTORS);
+  const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
+  const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   return `(() => {
+    ${buildClickDispatcher()}
     const SELECTORS = ${selectorsLiteral};
     const STOP_SELECTOR = '${STOP_BUTTON_SELECTOR}';
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
+    const CONVERSATION_SELECTOR = ${conversationLiteral};
+    const ASSISTANT_SELECTOR = ${assistantLiteral};
     const settleDelayMs = 800;
+    const isAnswerNowPlaceholder = (snapshot) => {
+      const normalized = String(snapshot?.text ?? '').toLowerCase();
+      return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
+    };
+
+    // Helper to detect assistant turns - matches buildAssistantExtractor logic
+    const isAssistantTurn = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+      if (turnAttr === 'assistant') return true;
+      const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+      if (role === 'assistant') return true;
+      const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+      if (testId.includes('assistant')) return true;
+      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+    };
+
     ${buildAssistantExtractor('extractFromTurns')}
 
     const captureViaObserver = () =>
@@ -324,7 +407,8 @@ function buildResponseObserverExpression(timeoutMs: number): string {
         const deadline = Date.now() + ${timeoutMs};
         let stopInterval = null;
         const observer = new MutationObserver(() => {
-          const extracted = extractFromTurns();
+          const extractedRaw = extractFromTurns();
+          const extracted = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
           if (extracted) {
             observer.disconnect();
             if (stopInterval) {
@@ -345,11 +429,12 @@ function buildResponseObserverExpression(timeoutMs: number): string {
           if (!stop) {
             return;
           }
-          const ariaLabel = stop.getAttribute('aria-label') || '';
-          if (ariaLabel.toLowerCase().includes('stop')) {
+          const isStopButton =
+            stop.getAttribute('data-testid') === 'stop-button' || stop.getAttribute('aria-label')?.toLowerCase()?.includes('stop');
+          if (isStopButton) {
             return;
           }
-          stop.click();
+          dispatchClickSequence(stop);
         }, 500);
         setTimeout(() => {
           if (stopInterval) {
@@ -360,32 +445,49 @@ function buildResponseObserverExpression(timeoutMs: number): string {
         }, ${timeoutMs});
       });
 
-    const waitForSettle = async (snapshot) => {
-      const settleWindowMs = 5000;
-      const settleIntervalMs = 400;
-      const deadline = Date.now() + settleWindowMs;
-      let latest = snapshot;
-      let lastLength = snapshot?.text?.length ?? 0;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
-        const refreshed = extractFromTurns();
-        if (refreshed && (refreshed.text?.length ?? 0) >= lastLength) {
-          latest = refreshed;
-          lastLength = refreshed.text?.length ?? lastLength;
-        }
-        const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
-        const finishedVisible =
-          Boolean(document.querySelector(FINISHED_SELECTOR)) ||
-          Array.from(document.querySelectorAll('.markdown')).some((n) => (n.textContent || '').trim() === 'Done');
-
-        if (!stopVisible || finishedVisible) {
+    // Check if the last assistant turn has finished (scoped to avoid detecting old turns)
+    const isLastAssistantTurnFinished = () => {
+      const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+      let lastAssistantTurn = null;
+      for (let i = turns.length - 1; i >= 0; i--) {
+        if (isAssistantTurn(turns[i])) {
+          lastAssistantTurn = turns[i];
           break;
         }
       }
-      return latest ?? snapshot;
+      if (!lastAssistantTurn) return false;
+      // Check for action buttons in this specific turn
+      if (lastAssistantTurn.querySelector(FINISHED_SELECTOR)) return true;
+      // Check for "Done" text in this turn's markdown
+      const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
+      return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
     };
 
-    const extracted = extractFromTurns();
+    const waitForSettle = async (snapshot) => {
+      const settleWindowMs = 5000;
+      const settleIntervalMs = 400;
+        const deadline = Date.now() + settleWindowMs;
+        let latest = snapshot;
+        let lastLength = snapshot?.text?.length ?? 0;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
+          const refreshed = extractFromTurns();
+          if (refreshed && !isAnswerNowPlaceholder(refreshed) && (refreshed.text?.length ?? 0) >= lastLength) {
+            latest = refreshed;
+            lastLength = refreshed.text?.length ?? lastLength;
+          }
+          const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
+          const finishedVisible = isLastAssistantTurnFinished();
+
+          if (!stopVisible || finishedVisible) {
+            break;
+          }
+        }
+        return latest ?? snapshot;
+      };
+
+    const extractedRaw = extractFromTurns();
+    const extracted = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
     if (extracted) {
       return waitForSettle(extracted);
     }
@@ -397,10 +499,15 @@ function buildAssistantExtractor(functionName: string): string {
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   return `const ${functionName} = () => {
+    ${buildClickDispatcher()}
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
     const isAssistantTurn = (node) => {
       if (!(node instanceof HTMLElement)) return false;
+      const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+      if (turnAttr === 'assistant') {
+        return true;
+      }
       const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
       if (role === 'assistant') {
         return true;
@@ -424,7 +531,7 @@ function buildAssistantExtractor(functionName: string): string {
           testid.includes('markdown') ||
           testid.includes('toggle')
         ) {
-          button.click();
+          dispatchClickSequence(button);
         }
       }
     };
@@ -437,11 +544,13 @@ function buildAssistantExtractor(functionName: string): string {
       }
       const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) ?? turn;
       expandCollapsibles(messageRoot);
-      const preferred =
-        messageRoot.querySelector('.markdown') ||
-        messageRoot.querySelector('[data-message-content]') ||
-        messageRoot;
-      const text = preferred?.innerText ?? '';
+      const preferred = messageRoot.querySelector('.markdown') || messageRoot.querySelector('[data-message-content]');
+      if (!preferred) {
+        continue;
+      }
+      const innerText = preferred?.innerText ?? '';
+      const textContent = preferred?.textContent ?? '';
+      const text = innerText.trim().length > 0 ? innerText : textContent;
       const html = preferred?.innerHTML ?? '';
       const messageId = messageRoot.getAttribute('data-message-id');
       const turnId = messageRoot.getAttribute('data-testid');
@@ -455,8 +564,9 @@ function buildAssistantExtractor(functionName: string): string {
 
 function buildCopyExpression(meta: { messageId?: string | null; turnId?: string | null }): string {
   return `(() => {
+    ${buildClickDispatcher()}
     const BUTTON_SELECTOR = '${COPY_BUTTON_SELECTOR}';
-    const TIMEOUT_MS = 5000;
+    const TIMEOUT_MS = 10000;
 
     const locateButton = () => {
       const hint = ${JSON.stringify(meta ?? {})};
@@ -520,53 +630,62 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
     };
 
     return new Promise((resolve) => {
-      const button = locateButton();
-      if (!button) {
-        resolve({ success: false, status: 'missing-button' });
-        return;
-      }
-      const interception = interceptClipboard();
-      let settled = false;
-      let pollId = null;
-      let timeoutId = null;
-      const finish = (payload) => {
-        if (settled) {
+      const deadline = Date.now() + TIMEOUT_MS;
+      const waitForButton = () => {
+        const button = locateButton();
+        if (button) {
+          const interception = interceptClipboard();
+          let settled = false;
+          let pollId = null;
+          let timeoutId = null;
+          const finish = (payload) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            if (pollId) {
+              clearInterval(pollId);
+            }
+            if (timeoutId) {
+              clearTimeout(timeoutId);
+            }
+            button.removeEventListener('copy', handleCopy, true);
+            interception.restore?.();
+            resolve(payload);
+          };
+
+          const readIntercepted = () => {
+            const markdown = interception.state.text ?? '';
+            return { success: Boolean(markdown.trim()), markdown };
+          };
+
+          const handleCopy = () => {
+            finish(readIntercepted());
+          };
+
+          button.addEventListener('copy', handleCopy, true);
+          button.scrollIntoView({ block: 'center', behavior: 'instant' });
+          dispatchClickSequence(button);
+          pollId = setInterval(() => {
+            const payload = readIntercepted();
+            if (payload.success) {
+              finish(payload);
+            }
+          }, 100);
+          timeoutId = setTimeout(() => {
+            button.removeEventListener('copy', handleCopy, true);
+            finish({ success: false, status: 'timeout' });
+          }, TIMEOUT_MS);
           return;
         }
-        settled = true;
-        if (pollId) {
-          clearInterval(pollId);
+        if (Date.now() > deadline) {
+          resolve({ success: false, status: 'missing-button' });
+          return;
         }
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
-        button.removeEventListener('copy', handleCopy, true);
-        interception.restore?.();
-        resolve(payload);
+        setTimeout(waitForButton, 120);
       };
 
-      const readIntercepted = () => {
-        const markdown = interception.state.text ?? '';
-        return { success: Boolean(markdown.trim()), markdown };
-      };
-
-      const handleCopy = () => {
-        finish(readIntercepted());
-      };
-
-      button.addEventListener('copy', handleCopy, true);
-      button.scrollIntoView({ block: 'center', behavior: 'instant' });
-      button.click();
-      pollId = setInterval(() => {
-        const payload = readIntercepted();
-        if (payload.success) {
-          finish(payload);
-        }
-      }, 100);
-      timeoutId = setTimeout(() => {
-        button.removeEventListener('copy', handleCopy, true);
-        finish({ success: false, status: 'timeout' });
-      }, TIMEOUT_MS);
+      waitForButton();
     });
   })()`;
 }

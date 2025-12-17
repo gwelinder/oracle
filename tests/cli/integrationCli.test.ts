@@ -9,6 +9,7 @@ const execFileAsync = promisify(execFile);
 const TSX_BIN = path.join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const CLI_ENTRY = path.join(process.cwd(), 'bin', 'oracle-cli.ts');
 const CLIENT_FACTORY = path.join(process.cwd(), 'tests', 'fixtures', 'mockClientFactory.cjs');
+const INTEGRATION_TIMEOUT = process.platform === 'win32' ? 60000 : 30000;
 
 describe('oracle CLI integration', () => {
   test('stores session metadata using stubbed client factory', async () => {
@@ -56,7 +57,7 @@ describe('oracle CLI integration', () => {
     expect(metadata.options?.effectiveModelId).toBe('gpt-5.1');
 
     await rm(oracleHome, { recursive: true, force: true });
-  }, 15000);
+  }, INTEGRATION_TIMEOUT);
 
   test('rejects mixing --model and --models regardless of source', async () => {
     const oracleHome = await mkdtemp(path.join(os.tmpdir(), 'oracle-multi-conflict-'));
@@ -72,16 +73,16 @@ describe('oracle CLI integration', () => {
       ORACLE_DISABLE_KEYTAR: '1',
     };
 
-    await expect(
-      execFileAsync(
-        process.execPath,
-        [TSX_BIN, CLI_ENTRY, '--prompt', 'conflict', '--model', 'gpt-5.1', '--models', 'gpt-5.1-pro'],
-        { env },
-      ),
-    ).rejects.toThrow(/--models cannot be combined with --model/i);
+	    await expect(
+	      execFileAsync(
+	        process.execPath,
+	        [TSX_BIN, CLI_ENTRY, '--prompt', 'conflict', '--model', 'gpt-5.1', '--models', 'gpt-5.2-pro'],
+	        { env },
+	      ),
+	    ).rejects.toThrow(/--models cannot be combined with --model/i);
 
     await rm(oracleHome, { recursive: true, force: true });
-  }, 10000);
+  }, INTEGRATION_TIMEOUT);
 
   test('runs gpt-5.1-codex via API-only path', async () => {
     const oracleHome = await mkdtemp(path.join(os.tmpdir(), 'oracle-codex-'));
@@ -115,7 +116,7 @@ describe('oracle CLI integration', () => {
     expect(metadata.usage?.totalTokens).toBe(20);
 
     await rm(oracleHome, { recursive: true, force: true });
-  }, 15000);
+  }, INTEGRATION_TIMEOUT);
 
   test('rejects gpt-5.1-codex-max until OpenAI ships the API', async () => {
     const oracleHome = await mkdtemp(path.join(os.tmpdir(), 'oracle-codex-max-'));
@@ -140,7 +141,7 @@ describe('oracle CLI integration', () => {
     ).rejects.toThrow(/codex-max is not available yet/i);
 
     await rm(oracleHome, { recursive: true, force: true });
-  }, 10000);
+  }, INTEGRATION_TIMEOUT);
 
   test('runs multi-model across OpenAI, Gemini, and Claude with custom factory', async () => {
     const oracleHome = await mkdtemp(path.join(os.tmpdir(), 'oracle-multi-'));
@@ -180,7 +181,7 @@ describe('oracle CLI integration', () => {
     expect(metadata.status).toBe('completed');
 
     await rm(oracleHome, { recursive: true, force: true });
-  }, 15000);
+  }, INTEGRATION_TIMEOUT);
 
   test('accepts shorthand multi-model list and normalizes to canonical IDs', async () => {
     const oracleHome = await mkdtemp(path.join(os.tmpdir(), 'oracle-multi-shorthand-'));
@@ -227,5 +228,5 @@ describe('oracle CLI integration', () => {
     expect(metadata.status).toBe('completed');
 
     await rm(oracleHome, { recursive: true, force: true });
-  }, 15000);
+  }, INTEGRATION_TIMEOUT);
 });

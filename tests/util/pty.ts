@@ -82,6 +82,36 @@ export async function runOracleTuiWithPty({
 
   let output = '';
   const pending = [...steps];
+  const startedAt = Date.now();
+
+  const maybeFlushSteps = (): void => {
+    while (pending.length > 0) {
+      const step = pending[0];
+      const matched =
+        typeof step.match === 'string' ? output.includes(step.match) : step.match.test(output);
+      const elapsed = Date.now() - startedAt;
+      // Fall back to a time-based trigger so the PTY never hangs if the prompt text shifts.
+      if (!matched && elapsed < 1_000) {
+        break;
+      }
+      if (step.write) {
+        try {
+          ps.write(step.write);
+        } catch {
+          // Ignore write errors if PTY closes between match and write.
+        }
+      }
+      if (matched) {
+        pending.shift();
+      } else {
+        // Keep the step so we retry on the next interval once more output arrives.
+        break;
+      }
+    }
+  };
+
+  const flushInterval = setInterval(maybeFlushSteps, 200);
+
   const killTimer =
     typeof killAfterMs === 'number' && killAfterMs > 0
       ? setTimeout(() => {
@@ -95,19 +125,7 @@ export async function runOracleTuiWithPty({
 
   ps.onData((data: string) => {
     output += data;
-    while (pending.length > 0) {
-      const step = pending[0];
-      const ok = typeof step.match === 'string' ? output.includes(step.match) : step.match.test(output);
-      if (!ok) break;
-      if (step.write) {
-        try {
-          ps.write(step.write);
-        } catch {
-          // Ignore write errors if PTY closes between match and write.
-        }
-      }
-      pending.shift();
-    }
+    maybeFlushSteps();
   });
 
   const exit = await new Promise<{ exitCode: number | null; signal: number | null }>((resolve) => {
@@ -117,6 +135,7 @@ export async function runOracleTuiWithPty({
   if (killTimer) {
     clearTimeout(killTimer);
   }
+  clearInterval(flushInterval);
 
   return { output, ...exit, homeDir: home };
 }

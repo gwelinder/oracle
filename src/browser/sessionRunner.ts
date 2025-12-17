@@ -38,11 +38,6 @@ export async function runBrowserSessionExecution(
   { runOptions, browserConfig, cwd, log }: RunBrowserSessionArgs,
   deps: BrowserSessionRunnerDeps = {},
 ): Promise<BrowserExecutionResult> {
-  if (runOptions.model.startsWith('gemini')) {
-    throw new BrowserAutomationError('Gemini models are not available in browser mode. Re-run with --engine api.', {
-      stage: 'preflight',
-    });
-  }
   const assemblePrompt = deps.assemblePrompt ?? assembleBrowserPrompt;
   const executeBrowser = deps.executeBrowser ?? runBrowserMode;
   const promptArtifacts = await assemblePrompt(runOptions, { cwd });
@@ -65,8 +60,8 @@ export async function runBrowserSessionExecution(
           ),
         );
       }
-    } else if (runOptions.file && runOptions.file.length > 0 && runOptions.browserInlineFiles) {
-      log(chalk.dim('[verbose] Browser inline file fallback enabled (pasting file contents).'));
+    } else if (runOptions.file && runOptions.file.length > 0 && promptArtifacts.attachmentMode === 'inline') {
+      log(chalk.dim('[verbose] Browser will paste file contents inline (no uploads).'));
     }
   }
   if (promptArtifacts.bundled) {
@@ -74,10 +69,11 @@ export async function runBrowserSessionExecution(
   }
   const headerLine = `Launching browser mode (${runOptions.model}) with ~${promptArtifacts.estimatedInputTokens.toLocaleString()} tokens.`;
   const automationLogger: BrowserLogger = ((message?: string) => {
-    if (!runOptions.verbose) return;
-    if (typeof message === 'string') {
-      log(message);
-    }
+    if (typeof message !== 'string') return;
+    const shouldAlwaysPrint =
+      message.startsWith('[browser] ') && /fallback|retry/i.test(message);
+    if (!runOptions.verbose && !shouldAlwaysPrint) return;
+    log(message);
   }) as BrowserLogger;
   automationLogger.verbose = Boolean(runOptions.verbose);
   automationLogger.sessionLog = runOptions.verbose ? log : (() => {});
@@ -93,6 +89,9 @@ export async function runBrowserSessionExecution(
     browserResult = await executeBrowser({
       prompt: promptArtifacts.composerText,
       attachments: promptArtifacts.attachments,
+      fallbackSubmission: promptArtifacts.fallback
+        ? { prompt: promptArtifacts.fallback.composerText, attachments: promptArtifacts.fallback.attachments }
+        : undefined,
       config: browserConfig,
       log: automationLogger,
       heartbeatIntervalMs: runOptions.heartbeatIntervalMs,

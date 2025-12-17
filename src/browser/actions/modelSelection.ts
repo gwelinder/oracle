@@ -5,6 +5,7 @@ import {
   MODEL_BUTTON_SELECTOR,
 } from '../constants.js';
 import { logDomFailure } from '../domDebug.js';
+import { buildClickDispatcher } from './domEvents.js';
 
 export async function ensureModelSelection(
   Runtime: ChromeClient['Runtime'],
@@ -21,7 +22,7 @@ export async function ensureModelSelection(
     | { status: 'already-selected'; label?: string | null }
     | { status: 'switched'; label?: string | null }
     | { status: 'switched-best-effort'; label?: string | null }
-    | { status: 'option-not-found' }
+    | { status: 'option-not-found'; hint?: { temporaryChat?: boolean; availableOptions?: string[] } }
     | { status: 'button-missing' }
     | undefined;
 
@@ -35,7 +36,14 @@ export async function ensureModelSelection(
     }
     case 'option-not-found': {
       await logDomFailure(Runtime, logger, 'model-switcher-option');
-      throw new Error(`Unable to find model option matching "${desiredModel}" in the model switcher.`);
+      const isTemporary = result.hint?.temporaryChat ?? false;
+      const available = (result.hint?.availableOptions ?? []).filter(Boolean);
+      const availableHint = available.length > 0 ? ` Available: ${available.join(', ')}.` : '';
+      const tempHint =
+        isTemporary && /\bpro\b/i.test(desiredModel)
+          ? ' You are in Temporary Chat mode; Pro models are not available there. Remove "temporary-chat=true" from --chatgpt-url or use a non-Pro model (e.g. gpt-5.2).'
+          : '';
+      throw new Error(`Unable to find model option matching "${desiredModel}" in the model switcher.${availableHint}${tempHint}`);
     }
     default: {
       await logDomFailure(Runtime, logger, 'model-switcher-button');
@@ -56,6 +64,7 @@ function buildModelSelectionExpression(targetModel: string): string {
   const menuContainerLiteral = JSON.stringify(MENU_CONTAINER_SELECTOR);
   const menuItemLiteral = JSON.stringify(MENU_ITEM_SELECTOR);
   return `(() => {
+    ${buildClickDispatcher()}
     // Capture the selectors and matcher literals up front so the browser expression stays pure.
     const BUTTON_SELECTOR = '${MODEL_BUTTON_SELECTOR}';
     const LABEL_TOKENS = ${labelLiteral};
@@ -80,22 +89,46 @@ function buildModelSelectionExpression(targetModel: string): string {
       .map((token) => normalizeText(token))
       .filter(Boolean);
     const targetWords = normalizedTarget.split(' ').filter(Boolean);
+    const desiredVersion = normalizedTarget.includes('5 2')
+      ? '5-2'
+      : normalizedTarget.includes('5 1')
+        ? '5-1'
+        : normalizedTarget.includes('5 0')
+          ? '5-0'
+          : null;
+    const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
+    const wantsInstant = normalizedTarget.includes('instant');
+    const wantsThinking = normalizedTarget.includes('thinking');
 
     const button = document.querySelector(BUTTON_SELECTOR);
     if (!button) {
       return { status: 'button-missing' };
     }
 
+    const getButtonLabel = () => (button.textContent ?? '').trim();
+    const buttonMatchesTarget = () => {
+      const normalizedLabel = normalizeText(getButtonLabel());
+      if (!normalizedLabel) return false;
+      if (desiredVersion) {
+        if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2')) return false;
+        if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
+        if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
+      }
+      if (wantsPro && !normalizedLabel.includes(' pro')) return false;
+      if (wantsInstant && !normalizedLabel.includes('instant')) return false;
+      if (wantsThinking && !normalizedLabel.includes('thinking')) return false;
+      return true;
+    };
+
+    if (buttonMatchesTarget()) {
+      return { status: 'already-selected', label: getButtonLabel() };
+    }
+
     let lastPointerClick = 0;
     const pointerClick = () => {
-      // Some menus ignore synthetic click events.
-      const down = new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, pointerType: 'mouse' });
-      const up = new PointerEvent('pointerup', { bubbles: true, pointerId: 1, pointerType: 'mouse' });
-      const click = new MouseEvent('click', { bubbles: true });
-      button.dispatchEvent(down);
-      button.dispatchEvent(up);
-      button.dispatchEvent(click);
-      lastPointerClick = performance.now();
+      if (dispatchClickSequence(button)) {
+        lastPointerClick = performance.now();
+      }
     };
 
     const getOptionLabel = (node) => node?.textContent?.trim() ?? '';
@@ -128,8 +161,46 @@ function buildModelSelectionExpression(targetModel: string): string {
       }
       let score = 0;
       const normalizedTestId = (testid ?? '').toLowerCase();
-      if (normalizedTestId && TEST_IDS.some((id) => normalizedTestId.includes(id))) {
-        score += 1000;
+      if (normalizedTestId) {
+        if (desiredVersion) {
+          // data-testid strings have been observed with both dotted and dashed versions (e.g. gpt-5.2-pro vs gpt-5-2-pro).
+          const has52 =
+            normalizedTestId.includes('5-2') ||
+            normalizedTestId.includes('5.2') ||
+            normalizedTestId.includes('gpt-5-2') ||
+            normalizedTestId.includes('gpt-5.2') ||
+            normalizedTestId.includes('gpt52');
+          const has51 =
+            normalizedTestId.includes('5-1') ||
+            normalizedTestId.includes('5.1') ||
+            normalizedTestId.includes('gpt-5-1') ||
+            normalizedTestId.includes('gpt-5.1') ||
+            normalizedTestId.includes('gpt51');
+          const has50 =
+            normalizedTestId.includes('5-0') ||
+            normalizedTestId.includes('5.0') ||
+            normalizedTestId.includes('gpt-5-0') ||
+            normalizedTestId.includes('gpt-5.0') ||
+            normalizedTestId.includes('gpt50');
+          const candidateVersion = has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
+          // If a candidate advertises a different version, ignore it entirely.
+          if (candidateVersion && candidateVersion !== desiredVersion) {
+            return 0;
+          }
+          // When targeting an explicit version, avoid selecting submenu wrappers that can contain legacy models.
+          if (normalizedTestId.includes('submenu') && candidateVersion === null) {
+            return 0;
+          }
+        }
+        const matches = TEST_IDS.filter((id) => id && normalizedTestId.includes(id));
+        if (matches.length > 0) {
+          // Prefer the most specific match (longest token) instead of treating any hit as equal.
+          // This prevents generic tokens (e.g. "pro") from outweighing version-specific targets.
+          const best = matches.reduce((acc, token) => (token.length > acc.length ? token : acc), '');
+          score += 200 + Math.min(900, best.length * 25);
+          if (best.startsWith('model-switcher-')) score += 120;
+          if (best.includes('gpt-')) score += 60;
+        }
       }
       if (normalizedText && normalizedTarget) {
         if (normalizedText === normalizedTarget) {
@@ -156,6 +227,14 @@ function buildModelSelectionExpression(targetModel: string): string {
         }
         score -= missing * 12;
       }
+      // If the caller didn't explicitly ask for Pro, prefer non-Pro options when both exist.
+      if (wantsPro) {
+        if (!normalizedText.includes(' pro')) {
+          score -= 80;
+        }
+      } else if (normalizedText.includes(' pro')) {
+        score -= 40;
+      }
       return Math.max(score, 0);
     };
 
@@ -175,7 +254,7 @@ function buildModelSelectionExpression(targetModel: string): string {
           }
           const label = getOptionLabel(option);
           if (!bestMatch || score > bestMatch.score) {
-            bestMatch = { node: option, label, score };
+            bestMatch = { node: option, label, score, testid, normalizedText };
           }
         }
       }
@@ -184,6 +263,28 @@ function buildModelSelectionExpression(targetModel: string): string {
 
     return new Promise((resolve) => {
       const start = performance.now();
+      const detectTemporaryChat = () => {
+        try {
+          const url = new URL(window.location.href);
+          const flag = (url.searchParams.get('temporary-chat') ?? '').toLowerCase();
+          if (flag === 'true' || flag === '1' || flag === 'yes') return true;
+        } catch {}
+        const title = (document.title || '').toLowerCase();
+        if (title.includes('temporary chat')) return true;
+        const body = (document.body?.innerText || '').toLowerCase();
+        return body.includes('temporary chat');
+      };
+      const collectAvailableOptions = () => {
+        const menuRoots = Array.from(document.querySelectorAll(${menuContainerLiteral}));
+        const nodes = menuRoots.length > 0
+          ? menuRoots.flatMap((root) => Array.from(root.querySelectorAll(${menuItemLiteral})))
+          : Array.from(document.querySelectorAll(${menuItemLiteral}));
+        const labels = nodes
+          .map((node) => (node?.textContent ?? '').trim())
+          .filter(Boolean)
+          .filter((label, index, arr) => arr.indexOf(label) === index);
+        return labels.slice(0, 12);
+      };
       const ensureMenuOpen = () => {
         const menuOpen = document.querySelector('[role="menu"], [data-radix-collection-root]');
         if (!menuOpen && performance.now() - lastPointerClick > REOPEN_INTERVAL_MS) {
@@ -204,15 +305,32 @@ function buildModelSelectionExpression(targetModel: string): string {
         const match = findBestOption();
         if (match) {
           if (optionIsSelected(match.node)) {
-            resolve({ status: 'already-selected', label: match.label });
+            resolve({ status: 'already-selected', label: getButtonLabel() || match.label });
             return;
           }
-          match.node.click();
-          resolve({ status: 'switched', label: match.label });
+          dispatchClickSequence(match.node);
+          // Submenus (e.g. "Legacy models") need a second pass to pick the actual model option.
+          // Keep scanning once the submenu opens instead of treating the submenu click as a final switch.
+          const isSubmenu = (match.testid ?? '').toLowerCase().includes('submenu');
+          if (isSubmenu) {
+            setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
+            return;
+          }
+          // Wait for the top bar label to reflect the requested model; otherwise keep scanning.
+          setTimeout(() => {
+            if (buttonMatchesTarget()) {
+              resolve({ status: 'switched', label: getButtonLabel() || match.label });
+              return;
+            }
+            attempt();
+          }, Math.max(120, INITIAL_WAIT_MS));
           return;
         }
         if (performance.now() - start > MAX_WAIT_MS) {
-          resolve({ status: 'option-not-found' });
+          resolve({
+            status: 'option-not-found',
+            hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
+          });
           return;
         }
         setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
@@ -274,6 +392,21 @@ function buildModelMatchersLiteral(targetModel: string): { labelTokens: string[]
     testIdTokens.add('gpt5-0');
     testIdTokens.add('gpt50');
   }
+  // Numeric variations (5.2 ↔ 52 ↔ gpt-5-2)
+  if (base.includes('5.2') || base.includes('5-2') || base.includes('52')) {
+    push('5.2', labelTokens);
+    push('gpt-5.2', labelTokens);
+    push('gpt5.2', labelTokens);
+    push('gpt-5-2', labelTokens);
+    push('gpt5-2', labelTokens);
+    push('gpt52', labelTokens);
+    push('chatgpt 5.2', labelTokens);
+    if (base.includes('thinking')) push('thinking', labelTokens);
+    if (base.includes('instant')) push('instant', labelTokens);
+    testIdTokens.add('gpt-5-2');
+    testIdTokens.add('gpt5-2');
+    testIdTokens.add('gpt52');
+  }
   // Pro / research variants
   if (base.includes('pro')) {
     push('proresearch', labelTokens);
@@ -288,6 +421,11 @@ function buildModelMatchersLiteral(targetModel: string): { labelTokens: string[]
       testIdTokens.add('gpt-5.0-pro');
       testIdTokens.add('gpt-5-0-pro');
       testIdTokens.add('gpt50pro');
+    }
+    if (base.includes('5.2') || base.includes('5-2') || base.includes('52')) {
+      testIdTokens.add('gpt-5.2-pro');
+      testIdTokens.add('gpt-5-2-pro');
+      testIdTokens.add('gpt52pro');
     }
     testIdTokens.add('pro');
     testIdTokens.add('proresearch');
