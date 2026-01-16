@@ -15,37 +15,42 @@ import {
 import { syncCookies } from './cookies.js';
 import {
   navigateToChatGPT,
+  navigateToPromptReadyWithFallback,
   ensureNotBlocked,
   ensureLoggedIn,
   ensurePromptReady,
+  installJavaScriptDialogAutoDismissal,
   ensureModelSelection,
   submitPrompt,
   clearPromptComposer,
   waitForAssistantResponse,
   captureAssistantMarkdown,
+  clearComposerAttachments,
   uploadAttachmentFile,
   waitForAttachmentCompletion,
   waitForUserTurnAttachments,
   readAssistantSnapshot,
 } from './pageActions.js';
 import { uploadAttachmentViaDataTransfer } from './actions/remoteFileTransfer.js';
-import { ensureExtendedThinking } from './actions/thinkingTime.js';
+import { ensureThinkingTime } from './actions/thinkingTime.js';
 import { estimateTokenCount, withRetries, delay } from './utils.js';
 import { formatElapsed } from '../oracle/format.js';
-import { CHATGPT_URL } from './constants.js';
+import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR, DEFAULT_MODEL_STRATEGY } from './constants.js';
 import type { LaunchedChrome } from 'chrome-launcher';
 import { BrowserAutomationError } from '../oracle/errors.js';
+import { alignPromptEchoPair, buildPromptEchoMatcher } from './reattachHelpers.js';
 import {
   cleanupStaleProfileState,
   readChromePid,
   readDevToolsPort,
+  shouldCleanupManualLoginProfileState,
   verifyDevToolsReachable,
   writeChromePid,
   writeDevToolsActivePort,
 } from './profileState.js';
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from './types.js';
-export { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
+export { CHATGPT_URL, DEFAULT_MODEL_STRATEGY, DEFAULT_MODEL_TARGET } from './constants.js';
 export { parseDuration, delay, normalizeChatgptUrl, isTemporaryChatUrl } from './utils.js';
 
 export async function runBrowserMode(options: BrowserRunOptions): Promise<BrowserRunResult> {
@@ -72,12 +77,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (!runtimeHintCb || !chrome?.port) {
       return;
     }
+    const conversationId = lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined;
     const hint = {
       chromePid: chrome.pid,
       chromePort: chrome.port,
       chromeHost,
       chromeTargetId: lastTargetId,
       tabUrl: lastUrl,
+      conversationId,
       userDataDir,
       controllerPid: process.pid,
     };
@@ -127,13 +134,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     ? manualProfileDir
     : await mkdtemp(path.join(await resolveUserDataBaseDir(), 'oracle-browser-'));
   if (manualLogin) {
+    // Learned: manual login reuses a persistent profile so cookies/SSO survive.
     await mkdir(userDataDir, { recursive: true });
     logger(`Manual login mode enabled; reusing persistent profile at ${userDataDir}`);
   } else {
     logger(`Created temporary Chrome profile at ${userDataDir}`);
   }
 
-  const effectiveKeepBrowser = config.keepBrowser || manualLogin;
+  const effectiveKeepBrowser = Boolean(config.keepBrowser);
   const reusedChrome = manualLogin ? await maybeReuseRunningChrome(userDataDir, logger) : null;
   const chrome =
     reusedChrome ??
@@ -158,6 +166,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     removeTerminationHooks = registerTerminationHooks(chrome, userDataDir, effectiveKeepBrowser, logger, {
       isInFlight: () => runStatus !== 'complete',
       emitRuntimeHint,
+      preserveUserDataDir: manualLogin,
     });
   } catch {
     // ignore failure; cleanup still happens below
@@ -171,6 +180,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let runStatus: 'attempted' | 'complete' = 'attempted';
   let connectionClosedUnexpectedly = false;
   let stopThinkingMonitor: (() => void) | null = null;
+  let removeDialogHandler: (() => void) | null = null;
   let appliedCookies = 0;
 
   try {
@@ -203,25 +213,32 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       domainEnablers.push(DOM.enable());
     }
     await Promise.all(domainEnablers);
+    removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
     if (!manualLogin) {
       await Network.clearBrowserCookies();
     }
 
-    const cookieSyncEnabled = config.cookieSync && !manualLogin;
+    const manualLoginCookieSync = manualLogin && Boolean(config.manualLoginCookieSync);
+    const cookieSyncEnabled = config.cookieSync && (!manualLogin || manualLoginCookieSync);
     if (cookieSyncEnabled) {
+      if (manualLoginCookieSync) {
+        logger('Manual login mode: seeding persistent profile with cookies from your Chrome profile.');
+      }
       if (!config.inlineCookies) {
         logger(
           'Heads-up: macOS may prompt for your Keychain password to read Chrome cookies; use --copy or --render for manual flow.',
-        );
-      } else {
-        logger('Applying inline cookies (skipping Chrome profile read and Keychain prompt)');
-      }
-      const cookieCount = await syncCookies(Network, config.url, config.chromeProfile, logger, {
-        allowErrors: config.allowCookieErrors ?? false,
-        filterNames: config.cookieNames ?? undefined,
-        inlineCookies: config.inlineCookies ?? undefined,
-        cookiePath: config.chromeCookiePath ?? undefined,
-      });
+      );
+    } else {
+      logger('Applying inline cookies (skipping Chrome profile read and Keychain prompt)');
+    }
+    // Learned: always sync cookies before the first navigation so /backend-api/me succeeds.
+    const cookieCount = await syncCookies(Network, config.url, config.chromeProfile, logger, {
+      allowErrors: config.allowCookieErrors ?? false,
+      filterNames: config.cookieNames ?? undefined,
+      inlineCookies: config.inlineCookies ?? undefined,
+      cookiePath: config.chromeCookiePath ?? undefined,
+      waitMs: config.cookieSyncWaitMs ?? 0,
+    });
       appliedCookies = cookieCount;
       if (config.inlineCookies && cookieCount === 0) {
         throw new Error('No inline cookies were applied; aborting before navigation.');
@@ -244,15 +261,18 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
 
     if (cookieSyncEnabled && !manualLogin && (appliedCookies ?? 0) === 0 && !config.inlineCookies) {
+      // Learned: if the profile has no ChatGPT cookies, browser mode will just bounce to login.
+      // Fail early so the user knows to sign in.
       throw new BrowserAutomationError(
         'No ChatGPT cookies were applied from your Chrome profile; cannot proceed in browser mode. ' +
-          'Make sure ChatGPT is signed in in the selected profile or rebuild the keytar native module if it failed to load.',
+          'Make sure ChatGPT is signed in in the selected profile, use --browser-manual-login / inline cookies, ' +
+          'or retry with --browser-cookie-wait 5s if Keychain prompts are slow.',
         {
           stage: 'execute-browser',
           details: {
             profile: config.chromeProfile ?? 'Default',
             cookiePath: config.chromeCookiePath ?? null,
-            hint: 'Rebuild keytar: PYTHON=/usr/bin/python3 /Users/steipete/Projects/oracle/runner npx node-gyp rebuild (run inside the keytar path from the error), then retry.',
+            hint: 'If macOS Keychain prompts or denies access, run oracle from a GUI session or use --copy/--render for the manual flow.',
           },
         },
       );
@@ -263,15 +283,24 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     // then hop to the requested URL if it differs.
     await raceWithDisconnect(navigateToChatGPT(Page, Runtime, baseUrl, logger));
     await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+    // Learned: login checks must happen on the base domain before jumping into project URLs.
     await raceWithDisconnect(
       waitForLogin({ runtime: Runtime, logger, appliedCookies, manualLogin, timeoutMs: config.timeoutMs }),
     );
 
     if (config.url !== baseUrl) {
-      await raceWithDisconnect(navigateToChatGPT(Page, Runtime, config.url, logger));
-      await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+      await raceWithDisconnect(
+        navigateToPromptReadyWithFallback(Page, Runtime, {
+          url: config.url,
+          fallbackUrl: baseUrl,
+          timeoutMs: config.inputTimeoutMs,
+          headless: config.headless,
+          logger,
+        }),
+      );
+    } else {
+      await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
     }
-    await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
     logger(`Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`);
     const captureRuntimeSnapshot = async () => {
       try {
@@ -294,6 +323,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       } catch {
         // ignore
       }
+      if (lastUrl) {
+        logger(`[browser] url = ${lastUrl}`);
+      }
       if (chrome?.port) {
         const suffix = lastTargetId ? ` target=${lastTargetId}` : '';
         if (lastUrl) {
@@ -304,11 +336,46 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         await emitRuntimeHint();
       }
     };
+    let conversationHintInFlight: Promise<boolean> | null = null;
+    const updateConversationHint = async (label: string, timeoutMs = 10_000): Promise<boolean> => {
+      if (!chrome?.port) {
+        return false;
+      }
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        try {
+          const { result } = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
+          if (typeof result?.value === 'string' && result.value.includes('/c/')) {
+            lastUrl = result.value;
+            logger(`[browser] conversation url (${label}) = ${lastUrl}`);
+            await emitRuntimeHint();
+            return true;
+          }
+        } catch {
+          // ignore; keep polling until timeout
+        }
+        await delay(250);
+      }
+      return false;
+    };
+    const scheduleConversationHint = (label: string, timeoutMs?: number): void => {
+      if (conversationHintInFlight) {
+        return;
+      }
+      // Learned: the /c/ URL can update after the answer; emit hints in the background.
+      // Run in the background so prompt submission/streaming isn't blocked by slow URL updates.
+      conversationHintInFlight = updateConversationHint(label, timeoutMs)
+        .catch(() => false)
+        .finally(() => {
+          conversationHintInFlight = null;
+        });
+    };
     await captureRuntimeSnapshot();
-    if (config.desiredModel) {
+    const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
+    if (config.desiredModel && modelStrategy !== 'ignore') {
       await raceWithDisconnect(
         withRetries(
-          () => ensureModelSelection(Runtime, config.desiredModel as string, logger),
+          () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
           {
             retries: 2,
             delayMs: 300,
@@ -331,61 +398,188 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       });
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       logger(`Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`);
+    } else if (modelStrategy === 'ignore') {
+      logger('Model picker: skipped (strategy=ignore)');
     }
-    if (config.extendedThinking) {
+    // Handle thinking time selection if specified
+    const thinkingTime = config.thinkingTime;
+    if (thinkingTime) {
       await raceWithDisconnect(
-        withRetries(() => ensureExtendedThinking(Runtime, logger), {
+        withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger), {
           retries: 2,
           delayMs: 300,
           onRetry: (attempt, error) => {
             if (options.verbose) {
-              logger(`[retry] Extended thinking attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
+              logger(`[retry] Thinking time (${thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
             }
           },
         }),
       );
     }
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+      const baselineAssistantText =
+        typeof baselineSnapshot?.text === 'string' ? baselineSnapshot.text.trim() : '';
       const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
+      let attachmentWaitTimedOut = false;
+      let inputOnlyAttachments = false;
       if (submissionAttachments.length > 0) {
         if (!DOM) {
           throw new Error('Chrome DOM domain unavailable while uploading attachments.');
         }
-        for (const attachment of submissionAttachments) {
+        await clearComposerAttachments(Runtime, 5_000, logger);
+        for (let attachmentIndex = 0; attachmentIndex < submissionAttachments.length; attachmentIndex += 1) {
+          const attachment = submissionAttachments[attachmentIndex];
           logger(`Uploading attachment: ${attachment.displayPath}`);
-          await uploadAttachmentFile({ runtime: Runtime, dom: DOM }, attachment, logger);
+          const uiConfirmed = await uploadAttachmentFile(
+            { runtime: Runtime, dom: DOM, input: Input },
+            attachment,
+            logger,
+            { expectedCount: attachmentIndex + 1 },
+          );
+          if (!uiConfirmed) {
+            inputOnlyAttachments = true;
+          }
+          await delay(500);
         }
-        // Scale timeout based on number of files: base 30s + 15s per additional file
+        // Scale timeout based on number of files: base 45s + 20s per additional file.
         const baseTimeout = config.inputTimeoutMs ?? 30_000;
-        const perFileTimeout = 15_000;
-        const waitBudget = Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
-        await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
-        logger('All attachments uploaded');
+        const perFileTimeout = 20_000;
+        const waitBudget = Math.max(baseTimeout, 45_000) + (submissionAttachments.length - 1) * perFileTimeout;
+        try {
+          await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
+          logger('All attachments uploaded');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/Attachments did not finish uploading before timeout/i.test(message)) {
+            attachmentWaitTimedOut = true;
+            logger(
+              `[browser] Attachment upload timed out after ${Math.round(waitBudget / 1000)}s; continuing without confirmation.`,
+            );
+          } else {
+            throw error;
+          }
+        }
       }
-      await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, prompt, logger);
+      let baselineTurns = await readConversationTurnCount(Runtime, logger);
+      // Learned: return baselineTurns so assistant polling can ignore earlier content.
+      const sendAttachmentNames = attachmentWaitTimedOut ? [] : attachmentNames;
+      const committedTurns = await submitPrompt(
+        {
+          runtime: Runtime,
+          input: Input,
+          attachmentNames: sendAttachmentNames,
+          baselineTurns: baselineTurns ?? undefined,
+          inputTimeoutMs: config.inputTimeoutMs ?? undefined,
+        },
+        prompt,
+        logger,
+      );
+      if (typeof committedTurns === 'number' && Number.isFinite(committedTurns)) {
+        if (baselineTurns === null || committedTurns > baselineTurns) {
+          baselineTurns = Math.max(0, committedTurns - 1);
+        }
+      }
       if (attachmentNames.length > 0) {
-        await waitForUserTurnAttachments(Runtime, attachmentNames, 20_000, logger);
-        logger('Verified attachments present on sent user message');
+        if (attachmentWaitTimedOut) {
+          logger('Attachment confirmation timed out; skipping user-turn attachment verification.');
+        } else if (inputOnlyAttachments) {
+          logger('Attachment UI did not render before send; skipping user-turn attachment verification.');
+        } else {
+          const verified = await waitForUserTurnAttachments(Runtime, attachmentNames, 20_000, logger);
+          if (!verified) {
+            throw new Error('Sent user message did not expose attachment UI after upload.');
+          }
+          logger('Verified attachments present on sent user message');
+        }
       }
+      // Reattach needs a /c/ URL; ChatGPT can update it late, so poll in the background.
+      scheduleConversationHint('post-submit', config.timeoutMs ?? 120_000);
+      return { baselineTurns, baselineAssistantText };
     };
 
+    let baselineTurns: number | null = null;
+    let baselineAssistantText: string | null = null;
     try {
-      await raceWithDisconnect(submitOnce(promptText, attachments));
+      const submission = await raceWithDisconnect(submitOnce(promptText, attachments));
+      baselineTurns = submission.baselineTurns;
+      baselineAssistantText = submission.baselineAssistantText;
     } catch (error) {
       const isPromptTooLarge =
         error instanceof BrowserAutomationError &&
         (error.details as { code?: string } | undefined)?.code === 'prompt-too-large';
       if (fallbackSubmission && isPromptTooLarge) {
+        // Learned: when prompts truncate, retry with file uploads so the UI receives the full content.
         logger('[browser] Inline prompt too large; retrying with file uploads.');
         await raceWithDisconnect(clearPromptComposer(Runtime, logger));
         await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
-        await raceWithDisconnect(submitOnce(fallbackSubmission.prompt, fallbackSubmission.attachments));
+        const submission = await raceWithDisconnect(
+          submitOnce(fallbackSubmission.prompt, fallbackSubmission.attachments),
+        );
+        baselineTurns = submission.baselineTurns;
+        baselineAssistantText = submission.baselineAssistantText;
       } else {
         throw error;
       }
     }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
-    const answer = await raceWithDisconnect(waitForAssistantResponse(Runtime, config.timeoutMs, logger));
+    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
+    const normalizeForComparison = (text: string): string =>
+      text.toLowerCase().replace(/\s+/g, ' ').trim();
+    const waitForFreshAssistantResponse = async (baselineNormalized: string, timeoutMs: number) => {
+      const baselinePrefix =
+        baselineNormalized.length >= 80
+          ? baselineNormalized.slice(0, Math.min(200, baselineNormalized.length))
+          : '';
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
+        const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
+        if (text) {
+          const normalized = normalizeForComparison(text);
+          const isBaseline =
+            normalized === baselineNormalized || (baselinePrefix.length > 0 && normalized.startsWith(baselinePrefix));
+          if (!isBaseline) {
+            return {
+              text,
+              html: snapshot?.html ?? undefined,
+              meta: { turnId: snapshot?.turnId ?? undefined, messageId: snapshot?.messageId ?? undefined },
+            };
+          }
+        }
+        await delay(350);
+      }
+      return null;
+    };
+    let answer = await raceWithDisconnect(
+      waitForAssistantResponseWithReload(
+        Runtime,
+        Page,
+        config.timeoutMs,
+        logger,
+        baselineTurns ?? undefined,
+      ),
+    );
+    // Ensure we store the final conversation URL even if the UI updated late.
+    await updateConversationHint('post-response', 15_000);
+    const baselineNormalized = baselineAssistantText ? normalizeForComparison(baselineAssistantText) : '';
+    if (baselineNormalized) {
+      const normalizedAnswer = normalizeForComparison(answer.text ?? '');
+      const baselinePrefix =
+        baselineNormalized.length >= 80
+          ? baselineNormalized.slice(0, Math.min(200, baselineNormalized.length))
+          : '';
+      const isBaseline =
+        normalizedAnswer === baselineNormalized ||
+        (baselinePrefix.length > 0 && normalizedAnswer.startsWith(baselinePrefix));
+      if (isBaseline) {
+        logger('Detected stale assistant response; waiting for new response...');
+        const refreshed = await waitForFreshAssistantResponse(baselineNormalized, 15_000);
+        if (refreshed) {
+          answer = refreshed;
+        }
+      }
+    }
     answerText = answer.text;
     answerHtml = answer.html ?? '';
     const copiedMarkdown = await raceWithDisconnect(
@@ -412,50 +606,54 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     ).catch(() => null);
     answerMarkdown = copiedMarkdown ?? answerText;
 
-    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
-    const normalizeForComparison = (text: string): string =>
-      text.toLowerCase().replace(/\s+/g, ' ').trim();
+    const promptEchoMatcher = buildPromptEchoMatcher(promptText);
 
     // Final sanity check: ensure we didn't accidentally capture the user prompt instead of the assistant turn.
-    const finalSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+    const finalSnapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
     const finalText = typeof finalSnapshot?.text === 'string' ? finalSnapshot.text.trim() : '';
-    if (
-      !copiedMarkdown &&
-      finalText &&
-      finalText !== answerMarkdown.trim() &&
-      finalText !== promptText.trim() &&
-      finalText.length >= answerMarkdown.trim().length
-    ) {
-      logger('Refreshed assistant response via final DOM snapshot');
-      answerText = finalText;
-      answerMarkdown = finalText;
+    if (finalText && finalText !== promptText.trim()) {
+      const trimmedMarkdown = answerMarkdown.trim();
+      const finalIsEcho = promptEchoMatcher ? promptEchoMatcher.isEcho(finalText) : false;
+      const lengthDelta = finalText.length - trimmedMarkdown.length;
+      const missingCopy = !copiedMarkdown && lengthDelta >= 0;
+      const likelyTruncatedCopy =
+        copiedMarkdown &&
+        trimmedMarkdown.length > 0 &&
+        lengthDelta >= Math.max(12, Math.floor(trimmedMarkdown.length * 0.75));
+      if ((missingCopy || likelyTruncatedCopy) && !finalIsEcho && finalText !== trimmedMarkdown) {
+        logger('Refreshed assistant response via final DOM snapshot');
+        answerText = finalText;
+        answerMarkdown = finalText;
+      }
     }
-	    // Detect prompt echo using normalized comparison (whitespace-insensitive)
-	    const normalizedAnswer = normalizeForComparison(answerMarkdown);
-	    const normalizedPrompt = normalizeForComparison(promptText);
-	    const promptPrefix =
-	      normalizedPrompt.length >= 80
-	        ? normalizedPrompt.slice(0, Math.min(200, normalizedPrompt.length))
-	        : '';
-	    const isPromptEcho =
-	      normalizedAnswer === normalizedPrompt || (promptPrefix.length > 0 && normalizedAnswer.startsWith(promptPrefix));
-	    if (isPromptEcho) {
-	      logger('Detected prompt echo in response; waiting for actual assistant response...');
-	      const deadline = Date.now() + 8_000;
-	      let bestText: string | null = null;
-	      let stableCount = 0;
+
+    // Detect prompt echo using normalized comparison (whitespace-insensitive).
+    const alignedEcho = alignPromptEchoPair(
+      answerText,
+      answerMarkdown,
+      promptEchoMatcher,
+      copiedMarkdown ? logger : undefined,
+      {
+        text: 'Aligned assistant response text to copied markdown after prompt echo',
+        markdown: 'Aligned assistant markdown to response text after prompt echo',
+      },
+    );
+    answerText = alignedEcho.answerText;
+    answerMarkdown = alignedEcho.answerMarkdown;
+    const isPromptEcho = alignedEcho.isEcho;
+    if (isPromptEcho) {
+      logger('Detected prompt echo in response; waiting for actual assistant response...');
+      const deadline = Date.now() + 15_000;
+      let bestText: string | null = null;
+      let stableCount = 0;
       while (Date.now() < deadline) {
-        const snapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
         const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
-	        const normalizedText = normalizeForComparison(text);
-	        const isStillEcho =
-	          !text ||
-	          normalizedText === normalizedPrompt ||
-	          (promptPrefix.length > 0 && normalizedText.startsWith(promptPrefix));
-	        if (!isStillEcho) {
-	          if (!bestText || text.length > bestText.length) {
-	            bestText = text;
-	            stableCount = 0;
+        const isStillEcho = !text || Boolean(promptEchoMatcher?.isEcho(text));
+        if (!isStillEcho) {
+          if (!bestText || text.length > bestText.length) {
+            bestText = text;
+            stableCount = 0;
           } else if (text === bestText) {
             stableCount += 1;
           }
@@ -470,6 +668,35 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         answerText = bestText;
         answerMarkdown = bestText;
       }
+    }
+    const minAnswerChars = 16;
+    if (answerText.trim().length > 0 && answerText.trim().length < minAnswerChars) {
+      const deadline = Date.now() + 12_000;
+      let bestText = answerText.trim();
+      let stableCycles = 0;
+      while (Date.now() < deadline) {
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
+        const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
+        if (text && text.length > bestText.length) {
+          bestText = text;
+          stableCycles = 0;
+        } else {
+          stableCycles += 1;
+        }
+        if (stableCycles >= 3 && bestText.length >= minAnswerChars) {
+          break;
+        }
+        await delay(400);
+      }
+      if (bestText.length > answerText.trim().length) {
+        logger('Refreshed short assistant response from latest DOM snapshot');
+        answerText = bestText;
+        answerMarkdown = bestText;
+      }
+    }
+    if (connectionClosedUnexpectedly) {
+      // Bail out on mid-run disconnects so the session stays reattachable.
+      throw new Error('Chrome disconnected before completion');
     }
     stopThinkingMonitor?.();
     runStatus = 'complete';
@@ -532,6 +759,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     } catch {
       // ignore
     }
+    removeDialogHandler?.();
     removeTerminationHooks?.();
     if (!effectiveKeepBrowser) {
       if (!connectionClosedUnexpectedly) {
@@ -541,7 +769,22 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           // ignore kill failures
         }
       }
-      await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+      if (manualLogin) {
+        const shouldCleanup = await shouldCleanupManualLoginProfileState(
+          userDataDir,
+          logger.verbose ? logger : undefined,
+          {
+            connectionClosedUnexpectedly,
+            host: chromeHost,
+          },
+        );
+        if (shouldCleanup) {
+          // Preserve the persistent manual-login profile, but clear stale reattach hints.
+          await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: 'never' }).catch(() => undefined);
+        }
+      } else {
+        await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+      }
       if (!connectionClosedUnexpectedly) {
         const totalSeconds = (Date.now() - startedAt) / 1000;
         logger(`Cleanup ${runStatus} • ${totalSeconds.toFixed(1)}s total`);
@@ -728,6 +971,7 @@ async function runRemoteBrowserMode(
   let answerHtml = '';
   let connectionClosedUnexpectedly = false;
   let stopThinkingMonitor: (() => void) | null = null;
+  let removeDialogHandler: (() => void) | null = null;
 
   try {
     const connection = await connectToRemoteChrome(host, port, logger, config.url);
@@ -745,6 +989,7 @@ async function runRemoteBrowserMode(
       domainEnablers.push(DOM.enable());
     }
     await Promise.all(domainEnablers);
+    removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
 
     // Skip cookie sync for remote Chrome - it already has cookies
     logger('Skipping cookie sync for remote Chrome (using existing session)');
@@ -767,9 +1012,10 @@ async function runRemoteBrowserMode(
       // ignore
     }
 
-    if (config.desiredModel) {
+    const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
+    if (config.desiredModel && modelStrategy !== 'ignore') {
       await withRetries(
-        () => ensureModelSelection(Runtime, config.desiredModel as string, logger),
+        () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
         {
           retries: 2,
           delayMs: 300,
@@ -782,29 +1028,38 @@ async function runRemoteBrowserMode(
       );
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
       logger(`Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`);
+    } else if (modelStrategy === 'ignore') {
+      logger('Model picker: skipped (strategy=ignore)');
     }
-    if (config.extendedThinking) {
-      await withRetries(() => ensureExtendedThinking(Runtime, logger), {
+    // Handle thinking time selection if specified
+    const thinkingTime = config.thinkingTime;
+    if (thinkingTime) {
+      await withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger), {
         retries: 2,
         delayMs: 300,
         onRetry: (attempt, error) => {
           if (options.verbose) {
-            logger(`[retry] Extended thinking attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
+            logger(`[retry] Thinking time (${thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
           }
         },
       });
     }
 
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+      const baselineAssistantText =
+        typeof baselineSnapshot?.text === 'string' ? baselineSnapshot.text.trim() : '';
       const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
       if (submissionAttachments.length > 0) {
         if (!DOM) {
           throw new Error('Chrome DOM domain unavailable while uploading attachments.');
         }
+        await clearComposerAttachments(Runtime, 5_000, logger);
         // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
         for (const attachment of submissionAttachments) {
           logger(`Uploading attachment: ${attachment.displayPath}`);
           await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
+          await delay(500);
         }
         // Scale timeout based on number of files: base 30s + 15s per additional file
         const baseTimeout = config.inputTimeoutMs ?? 30_000;
@@ -813,11 +1068,32 @@ async function runRemoteBrowserMode(
         await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
         logger('All attachments uploaded');
       }
-      await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, prompt, logger);
+      let baselineTurns = await readConversationTurnCount(Runtime, logger);
+      const committedTurns = await submitPrompt(
+        {
+          runtime: Runtime,
+          input: Input,
+          attachmentNames,
+          baselineTurns: baselineTurns ?? undefined,
+          inputTimeoutMs: config.inputTimeoutMs ?? undefined,
+        },
+        prompt,
+        logger,
+      );
+      if (typeof committedTurns === 'number' && Number.isFinite(committedTurns)) {
+        if (baselineTurns === null || committedTurns > baselineTurns) {
+          baselineTurns = Math.max(0, committedTurns - 1);
+        }
+      }
+      return { baselineTurns, baselineAssistantText };
     };
 
+    let baselineTurns: number | null = null;
+    let baselineAssistantText: string | null = null;
     try {
-      await submitOnce(promptText, attachments);
+      const submission = await submitOnce(promptText, attachments);
+      baselineTurns = submission.baselineTurns;
+      baselineAssistantText = submission.baselineAssistantText;
     } catch (error) {
       const isPromptTooLarge =
         error instanceof BrowserAutomationError &&
@@ -826,13 +1102,67 @@ async function runRemoteBrowserMode(
         logger('[browser] Inline prompt too large; retrying with file uploads.');
         await clearPromptComposer(Runtime, logger);
         await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-        await submitOnce(options.fallbackSubmission.prompt, options.fallbackSubmission.attachments);
+        const submission = await submitOnce(options.fallbackSubmission.prompt, options.fallbackSubmission.attachments);
+        baselineTurns = submission.baselineTurns;
+        baselineAssistantText = submission.baselineAssistantText;
       } else {
         throw error;
       }
     }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
-    const answer = await waitForAssistantResponse(Runtime, config.timeoutMs, logger);
+    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
+    const normalizeForComparison = (text: string): string =>
+      text.toLowerCase().replace(/\s+/g, ' ').trim();
+    const waitForFreshAssistantResponse = async (baselineNormalized: string, timeoutMs: number) => {
+      const baselinePrefix =
+        baselineNormalized.length >= 80
+          ? baselineNormalized.slice(0, Math.min(200, baselineNormalized.length))
+          : '';
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
+        const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
+        if (text) {
+          const normalized = normalizeForComparison(text);
+          const isBaseline =
+            normalized === baselineNormalized || (baselinePrefix.length > 0 && normalized.startsWith(baselinePrefix));
+          if (!isBaseline) {
+            return {
+              text,
+              html: snapshot?.html ?? undefined,
+              meta: { turnId: snapshot?.turnId ?? undefined, messageId: snapshot?.messageId ?? undefined },
+            };
+          }
+        }
+        await delay(350);
+      }
+      return null;
+    };
+    let answer = await waitForAssistantResponseWithReload(
+      Runtime,
+      Page,
+      config.timeoutMs,
+      logger,
+      baselineTurns ?? undefined,
+    );
+    const baselineNormalized = baselineAssistantText ? normalizeForComparison(baselineAssistantText) : '';
+    if (baselineNormalized) {
+      const normalizedAnswer = normalizeForComparison(answer.text ?? '');
+      const baselinePrefix =
+        baselineNormalized.length >= 80
+          ? baselineNormalized.slice(0, Math.min(200, baselineNormalized.length))
+          : '';
+      const isBaseline =
+        normalizedAnswer === baselineNormalized ||
+        (baselinePrefix.length > 0 && normalizedAnswer.startsWith(baselinePrefix));
+      if (isBaseline) {
+        logger('Detected stale assistant response; waiting for new response...');
+        const refreshed = await waitForFreshAssistantResponse(baselineNormalized, 15_000);
+        if (refreshed) {
+          answer = refreshed;
+        }
+      }
+    }
     answerText = answer.text;
     answerHtml = answer.html ?? '';
 
@@ -859,12 +1189,8 @@ async function runRemoteBrowserMode(
 
     answerMarkdown = copiedMarkdown ?? answerText;
 
-    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
-    const normalizeForComparison = (text: string): string =>
-      text.toLowerCase().replace(/\s+/g, ' ').trim();
-
     // Final sanity check: ensure we didn't accidentally capture the user prompt instead of the assistant turn.
-    const finalSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+    const finalSnapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
     const finalText = typeof finalSnapshot?.text === 'string' ? finalSnapshot.text.trim() : '';
     if (
       finalText &&
@@ -876,32 +1202,35 @@ async function runRemoteBrowserMode(
       answerText = finalText;
       answerMarkdown = finalText;
     }
-	    // Detect prompt echo using normalized comparison (whitespace-insensitive)
-	    const normalizedAnswer = normalizeForComparison(answerMarkdown);
-	    const normalizedPrompt = normalizeForComparison(promptText);
-	    const promptPrefix =
-	      normalizedPrompt.length >= 80
-	        ? normalizedPrompt.slice(0, Math.min(200, normalizedPrompt.length))
-	        : '';
-	    const isPromptEcho =
-	      normalizedAnswer === normalizedPrompt || (promptPrefix.length > 0 && normalizedAnswer.startsWith(promptPrefix));
-	    if (isPromptEcho) {
-	      logger('Detected prompt echo in response; waiting for actual assistant response...');
-	      const deadline = Date.now() + 8_000;
-	      let bestText: string | null = null;
-	      let stableCount = 0;
+
+    // Detect prompt echo using normalized comparison (whitespace-insensitive).
+    const promptEchoMatcher = buildPromptEchoMatcher(promptText);
+    const alignedEcho = alignPromptEchoPair(
+      answerText,
+      answerMarkdown,
+      promptEchoMatcher,
+      copiedMarkdown ? logger : undefined,
+      {
+        text: 'Aligned assistant response text to copied markdown after prompt echo',
+        markdown: 'Aligned assistant markdown to response text after prompt echo',
+      },
+    );
+    answerText = alignedEcho.answerText;
+    answerMarkdown = alignedEcho.answerMarkdown;
+    const isPromptEcho = alignedEcho.isEcho;
+    if (isPromptEcho) {
+      logger('Detected prompt echo in response; waiting for actual assistant response...');
+      const deadline = Date.now() + 15_000;
+      let bestText: string | null = null;
+      let stableCount = 0;
       while (Date.now() < deadline) {
-        const snapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
         const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
-	        const normalizedText = normalizeForComparison(text);
-	        const isStillEcho =
-	          !text ||
-	          normalizedText === normalizedPrompt ||
-	          (promptPrefix.length > 0 && normalizedText.startsWith(promptPrefix));
-	        if (!isStillEcho) {
-	          if (!bestText || text.length > bestText.length) {
-	            bestText = text;
-	            stableCount = 0;
+        const isStillEcho = !text || Boolean(promptEchoMatcher?.isEcho(text));
+        if (!isStillEcho) {
+          if (!bestText || text.length > bestText.length) {
+            bestText = text;
+            stableCount = 0;
           } else if (text === bestText) {
             stableCount += 1;
           }
@@ -970,6 +1299,7 @@ async function runRemoteBrowserMode(
     } catch {
       // ignore
     }
+    removeDialogHandler?.();
     await closeRemoteChromeTarget(host, port, remoteTargetId ?? undefined, logger);
     // Don't kill remote Chrome - it's not ours to manage
     const totalSeconds = (Date.now() - startedAt) / 1000;
@@ -1011,6 +1341,85 @@ export function formatThinkingLog(startedAt: number, now: number, message: strin
     .padStart(3, ' ');
   const statusLabel = message ? ` — ${message}` : '';
   return `${pct}% [${elapsedText} / ~10m]${statusLabel}${locatorSuffix}`;
+}
+
+async function waitForAssistantResponseWithReload(
+  Runtime: ChromeClient['Runtime'],
+  Page: ChromeClient['Page'],
+  timeoutMs: number,
+  logger: BrowserLogger,
+  minTurnIndex?: number,
+) {
+  try {
+    return await waitForAssistantResponse(Runtime, timeoutMs, logger, minTurnIndex);
+  } catch (error) {
+    if (!shouldReloadAfterAssistantError(error)) {
+      throw error;
+    }
+    const conversationUrl = await readConversationUrl(Runtime);
+    if (!conversationUrl || !isConversationUrl(conversationUrl)) {
+      throw error;
+    }
+    logger('Assistant response stalled; reloading conversation and retrying once');
+    await Page.navigate({ url: conversationUrl });
+    await delay(1000);
+    return await waitForAssistantResponse(Runtime, timeoutMs, logger, minTurnIndex);
+  }
+}
+
+function shouldReloadAfterAssistantError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('assistant-response') ||
+    message.includes('watchdog') ||
+    message.includes('timeout') ||
+    message.includes('capture assistant response')
+  );
+}
+
+async function readConversationUrl(Runtime: ChromeClient['Runtime']): Promise<string | null> {
+  try {
+    const currentUrl = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
+    return typeof currentUrl.result?.value === 'string' ? currentUrl.result.value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readConversationTurnCount(
+  Runtime: ChromeClient['Runtime'],
+  logger?: BrowserLogger,
+): Promise<number | null> {
+  const selectorLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
+  const attempts = 4;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const { result } = await Runtime.evaluate({
+        expression: `document.querySelectorAll(${selectorLiteral}).length`,
+        returnByValue: true,
+      });
+      const raw = typeof result?.value === 'number' ? result.value : Number(result?.value);
+      if (!Number.isFinite(raw)) {
+        throw new Error('Turn count not numeric');
+      }
+      return Math.max(0, Math.floor(raw));
+    } catch (error) {
+      if (attempt < attempts - 1) {
+        await delay(150);
+        continue;
+      }
+      if (logger?.verbose) {
+        logger(`Failed to read conversation turn count: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+function isConversationUrl(url: string): boolean {
+  return /\/c\/[a-z0-9-]+/i.test(url);
 }
 
 function startThinkingStatusMonitor(
@@ -1101,6 +1510,11 @@ function isWsl(): boolean {
   if (process.platform !== 'linux') return false;
   if (process.env.WSL_DISTRO_NAME) return true;
   return os.release().toLowerCase().includes('microsoft');
+}
+
+function extractConversationIdFromUrl(url: string): string | undefined {
+  const match = url.match(/\/c\/([a-zA-Z0-9-]+)/);
+  return match?.[1];
 }
 
 async function resolveUserDataBaseDir(): Promise<string> {

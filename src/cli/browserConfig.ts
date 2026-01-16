@@ -1,26 +1,31 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserSessionConfig } from '../sessionStore.js';
-import type { ModelName } from '../oracle.js';
-import { CHATGPT_URL, DEFAULT_MODEL_TARGET, isTemporaryChatUrl, normalizeChatgptUrl, parseDuration } from '../browserMode.js';
+import type { ModelName, ThinkingTimeLevel } from '../oracle.js';
+import { CHATGPT_URL, DEFAULT_MODEL_STRATEGY, DEFAULT_MODEL_TARGET, isTemporaryChatUrl, normalizeChatgptUrl, parseDuration } from '../browserMode.js';
+import { normalizeBrowserModelStrategy } from '../browser/modelStrategy.js';
+import type { BrowserModelStrategy } from '../browser/types.js';
 import type { CookieParam } from '../browser/types.js';
 import { getOracleHomeDir } from '../oracleHome.js';
 
 const DEFAULT_BROWSER_TIMEOUT_MS = 1_200_000;
-const DEFAULT_BROWSER_INPUT_TIMEOUT_MS = 30_000;
+const DEFAULT_BROWSER_INPUT_TIMEOUT_MS = 60_000;
 const DEFAULT_CHROME_PROFILE = 'Default';
 
-const BROWSER_MODEL_LABELS: Partial<Record<ModelName, string>> = {
-  // Browser engine supports GPT-5.2 and GPT-5.2 Pro (legacy/Pro aliases normalize to those targets).
-  'gpt-5-pro': 'GPT-5.2 Pro',
-  'gpt-5.1-pro': 'GPT-5.2 Pro',
-  'gpt-5.1': 'GPT-5.2',
-  'gpt-5.2': 'GPT-5.2',
-  // ChatGPT UI doesn't expose "instant" as a separate picker option; treat it as GPT-5.2 for browser automation.
-  'gpt-5.2-instant': 'GPT-5.2',
-  'gpt-5.2-pro': 'GPT-5.2 Pro',
-  'gemini-3-pro': 'Gemini 3 Pro',
-};
+// Ordered array: most specific models first to ensure correct selection.
+// The browser label is passed to the model picker which fuzzy-matches against ChatGPT's UI.
+const BROWSER_MODEL_LABELS: [ModelName, string][] = [
+  // Most specific first (e.g., "gpt-5.2-thinking" before "gpt-5.2")
+  ['gpt-5.2-thinking', 'GPT-5.2 Thinking'],
+  ['gpt-5.2-instant', 'GPT-5.2 Instant'],
+  ['gpt-5.2-pro', 'GPT-5.2 Pro'],
+  ['gpt-5.1-pro', 'GPT-5.2 Pro'],
+  ['gpt-5-pro', 'GPT-5.2 Pro'],
+  // Base models last (least specific)
+  ['gpt-5.2', 'GPT-5.2'],       // Selects "Auto" in ChatGPT UI
+  ['gpt-5.1', 'GPT-5.2'],       // Legacy alias → Auto
+  ['gemini-3-pro', 'Gemini 3 Pro'],
+];
 
 export interface BrowserFlagOptions {
   browserChromeProfile?: string;
@@ -30,6 +35,7 @@ export interface BrowserFlagOptions {
   browserUrl?: string;
   browserTimeout?: string;
   browserInputTimeout?: string;
+  browserCookieWait?: string;
   browserNoCookieSync?: boolean;
   browserInlineCookiesFile?: string;
   browserCookieNames?: string;
@@ -38,8 +44,11 @@ export interface BrowserFlagOptions {
   browserHideWindow?: boolean;
   browserKeepBrowser?: boolean;
   browserManualLogin?: boolean;
-  browserExtendedThinking?: boolean;
+  browserManualLoginProfileDir?: string | null;
+  /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
+  browserThinkingTime?: ThinkingTimeLevel;
   browserModelLabel?: string;
+  browserModelStrategy?: BrowserModelStrategy;
   browserAllowCookieErrors?: boolean;
   remoteChrome?: string;
   browserPort?: number;
@@ -59,10 +68,12 @@ export function normalizeChatGptModelForBrowser(model: ModelName): ModelName {
     return 'gpt-5.2-pro';
   }
 
-  // Legacy / UI-mismatch variants: map to the closest ChatGPT picker target.
-  if (normalized === 'gpt-5.2-instant') {
-    return 'gpt-5.2';
+  // Explicit model variants: keep as-is (they have their own browser labels)
+  if (normalized === 'gpt-5.2-thinking' || normalized === 'gpt-5.2-instant') {
+    return normalized;
   }
+
+  // Legacy aliases: map to base GPT-5.2 (Auto)
   if (normalized === 'gpt-5.1') {
     return 'gpt-5.2';
   }
@@ -76,14 +87,19 @@ export async function buildBrowserConfig(options: BrowserFlagOptions): Promise<B
   const baseModel = options.model.toLowerCase();
   const isChatGptModel = baseModel.startsWith('gpt-') && !baseModel.includes('codex');
   const shouldUseOverride = !isChatGptModel && normalizedOverride.length > 0 && normalizedOverride !== baseModel;
+  const modelStrategy =
+    normalizeBrowserModelStrategy(options.browserModelStrategy) ?? DEFAULT_MODEL_STRATEGY;
   const cookieNames = parseCookieNames(options.browserCookieNames ?? process.env.ORACLE_BROWSER_COOKIE_NAMES);
-  const inline = await resolveInlineCookies({
+  let inline = await resolveInlineCookies({
     inlineArg: options.browserInlineCookies,
     inlineFileArg: options.browserInlineCookiesFile,
     envPayload: process.env.ORACLE_BROWSER_COOKIES_JSON,
     envFile: process.env.ORACLE_BROWSER_COOKIES_FILE,
     cwd: process.cwd(),
   });
+  if (inline?.source?.startsWith('home:') && options.browserNoCookieSync !== true) {
+    inline = undefined;
+  }
 
   let remoteChrome: { host: string; port: number } | undefined;
   if (options.remoteChrome) {
@@ -98,7 +114,7 @@ export async function buildBrowserConfig(options: BrowserFlagOptions): Promise<B
       ? desiredModelOverride
       : mapModelToBrowserLabel(options.model);
 
-  if (url && isTemporaryChatUrl(url) && /\bpro\b/i.test(desiredModel ?? '')) {
+  if (modelStrategy === 'select' && url && isTemporaryChatUrl(url) && /\bpro\b/i.test(desiredModel ?? '')) {
     throw new Error(
       'Temporary Chat mode does not expose Pro models in the ChatGPT model picker. ' +
         'Remove "temporary-chat=true" from --chatgpt-url (or omit --chatgpt-url), or use a non-Pro model (e.g. --model gpt-5.2).',
@@ -115,20 +131,23 @@ export async function buildBrowserConfig(options: BrowserFlagOptions): Promise<B
     inputTimeoutMs: options.browserInputTimeout
       ? parseDuration(options.browserInputTimeout, DEFAULT_BROWSER_INPUT_TIMEOUT_MS)
       : undefined,
+    cookieSyncWaitMs: options.browserCookieWait ? parseDuration(options.browserCookieWait, 0) : undefined,
     cookieSync: options.browserNoCookieSync ? false : undefined,
     cookieNames,
     inlineCookies: inline?.cookies,
     inlineCookiesSource: inline?.source ?? null,
     headless: undefined, // disable headless; Cloudflare blocks it
     keepBrowser: options.browserKeepBrowser ? true : undefined,
-    manualLogin: options.browserManualLogin ? true : undefined,
+    manualLogin: options.browserManualLogin === undefined ? undefined : options.browserManualLogin,
+    manualLoginProfileDir: options.browserManualLoginProfileDir ?? undefined,
     hideWindow: options.browserHideWindow ? true : undefined,
     desiredModel,
+    modelStrategy,
     debug: options.verbose ? true : undefined,
     // Allow cookie failures by default so runs can continue without Chrome/Keychain secrets.
     allowCookieErrors: options.browserAllowCookieErrors ?? true,
     remoteChrome,
-    extendedThinking: options.browserExtendedThinking ? true : undefined,
+    thinkingTime: options.browserThinkingTime,
   };
 }
 
@@ -143,7 +162,13 @@ function selectBrowserPort(options: BrowserFlagOptions): number | null {
 
 export function mapModelToBrowserLabel(model: ModelName): string {
   const normalized = normalizeChatGptModelForBrowser(model);
-  return BROWSER_MODEL_LABELS[normalized] ?? DEFAULT_MODEL_TARGET;
+  // Iterate ordered array to find first match (most specific first)
+  for (const [key, label] of BROWSER_MODEL_LABELS) {
+    if (key === normalized) {
+      return label;
+    }
+  }
+  return DEFAULT_MODEL_TARGET;
 }
 
 export function resolveBrowserModelLabel(input: string | undefined, model: ModelName): string {

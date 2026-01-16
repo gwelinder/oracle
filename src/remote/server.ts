@@ -10,8 +10,9 @@ import type { BrowserAttachment, BrowserLogger, CookieParam } from '../browser/t
 import { runBrowserMode } from '../browserMode.js';
 import type { BrowserRunResult } from '../browserMode.js';
 import type { RemoteRunPayload, RemoteRunEvent } from './types.js';
-import { loadChromeCookies } from '../browser/chromeCookies.js';
+import { getCookies, type Cookie } from '@steipete/sweet-cookie';
 import { CHATGPT_URL } from '../browser/constants.js';
+import { getCliVersion } from '../version.js';
 import {
   cleanupStaleProfileState,
   readDevToolsPort,
@@ -64,6 +65,7 @@ export async function createRemoteServer(
   const server = http.createServer();
   const logger = options.logger ?? console.log;
   const authToken = options.token ?? randomBytes(16).toString('hex');
+  const startedAt = Date.now();
   const verbose = process.argv.includes('--verbose') || process.env.ORACLE_SERVE_VERBOSE === '1';
   const color = process.stdout.isTTY
     ? (formatter: (msg: string) => string, msg: string) => formatter(msg)
@@ -82,6 +84,26 @@ export async function createRemoteServer(
       logger('[serve] Health check /status');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/health') {
+      const authHeader = req.headers.authorization ?? '';
+      if (authHeader !== `Bearer ${authToken}`) {
+        if (verbose) {
+          logger(`[serve] Unauthorized /health attempt from ${formatSocket(req)} (missing/invalid token)`);
+        }
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          version: getCliVersion(),
+          uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+        }),
+      );
       return;
     }
     if (req.method !== 'POST' || req.url !== '/runs') {
@@ -378,15 +400,17 @@ function formatReachableAddresses(bindAddress: string, port: number): string[] {
 async function loadLocalChatgptCookies(logger: (message: string) => void, targetUrl: string): Promise<{ cookies: CookieParam[] | null; opened: boolean }> {
   try {
     logger('Loading ChatGPT cookies from this host\'s Chrome profile...');
-    const cookies = await Promise.resolve(
-      loadChromeCookies({
-        targetUrl,
-        profile: 'Default',
-      }),
-    ).catch((error) => {
-      logger(`Unable to load local ChatGPT cookies on this host: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+    const { cookies: rawCookies, warnings } = await getCookies({
+      url: targetUrl,
+      browsers: ['chrome'],
+      mode: 'merge',
+      chromeProfile: 'Default',
+      timeoutMs: 5_000,
     });
+    if (warnings.length) {
+      logger(`Cookie warnings:\n- ${warnings.join('\n- ')}`);
+    }
+    const cookies = rawCookies.map(toCdpCookie).filter((c): c is CookieParam => Boolean(c));
     if (!cookies || cookies.length === 0) {
       logger('No local ChatGPT cookies found on this host. Please log in once; opening ChatGPT...');
       const opened = triggerLocalLoginPrompt(logger, targetUrl);
@@ -396,7 +420,7 @@ async function loadLocalChatgptCookies(logger: (message: string) => void, target
     return { cookies, opened: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const missingDbMatch = message.match(/Unable to locate Chrome cookie DB at (.+)/);
+    const missingDbMatch = message.match(/Unable to locate Chrome cookie DB at (.+?)(?:\.|$)/);
     if (missingDbMatch) {
       const lookedPath = missingDbMatch[1];
       logger(`Chrome cookies not found at ${lookedPath}. Set --browser-cookie-path to your Chrome profile or log in manually.`);
@@ -411,6 +435,23 @@ async function loadLocalChatgptCookies(logger: (message: string) => void, target
     const opened = triggerLocalLoginPrompt(logger, targetUrl);
     return { cookies: null, opened };
   }
+}
+
+function toCdpCookie(cookie: Cookie): CookieParam | null {
+  if (!cookie?.name) return null;
+  const out: CookieParam = {
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path ?? '/',
+    secure: cookie.secure ?? true,
+    httpOnly: cookie.httpOnly ?? false,
+  };
+  if (typeof cookie.expires === 'number') out.expires = cookie.expires;
+  if (cookie.sameSite === 'Lax' || cookie.sameSite === 'Strict' || cookie.sameSite === 'None') {
+    out.sameSite = cookie.sameSite;
+  }
+  return out;
 }
 
 function triggerLocalLoginPrompt(logger: (message: string) => void, url: string): boolean {

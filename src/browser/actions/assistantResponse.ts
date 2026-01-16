@@ -13,14 +13,30 @@ import { buildClickDispatcher } from './domEvents.js';
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = 'assistant-response-watchdog-timeout';
 
+function isAnswerNowPlaceholderText(normalized: string): boolean {
+  const text = normalized.trim();
+  if (!text) return false;
+  // Learned: "Pro thinking" shows a placeholder turn that contains "Answer now".
+  // That is not the final answer and must be ignored in browser automation.
+  if (text === 'chatgpt said:' || text === 'chatgpt said') return true;
+  if (text.includes('file upload request') && (text.includes('pro thinking') || text.includes('chatgpt said'))) {
+    return true;
+  }
+  return text.includes('answer now') && (text.includes('pro thinking') || text.includes('chatgpt said'));
+}
+
 export async function waitForAssistantResponse(
   Runtime: ChromeClient['Runtime'],
   timeoutMs: number,
   logger: BrowserLogger,
+  minTurnIndex?: number,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } }> {
   const start = Date.now();
   logger('Waiting for ChatGPT response');
-  const expression = buildResponseObserverExpression(timeoutMs);
+  // Learned: two paths are needed:
+  // 1) DOM observer (fast when mutations fire),
+  // 2) snapshot poller (fallback when observers miss or JS stalls).
+  const expression = buildResponseObserverExpression(timeoutMs, minTurnIndex);
   const evaluationPromise = Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
   const raceReadyEvaluation = evaluationPromise.then(
     (value) => ({ kind: 'evaluation' as const, value }),
@@ -28,7 +44,7 @@ export async function waitForAssistantResponse(
       throw { source: 'evaluation' as const, error };
     },
   );
-  const pollerPromise = pollAssistantCompletion(Runtime, timeoutMs).then(
+  const pollerPromise = pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex).then(
     (value) => {
       if (!value) {
         throw { source: 'poll' as const, error: new Error(ASSISTANT_POLL_TIMEOUT_ERROR) };
@@ -58,7 +74,7 @@ export async function waitForAssistantResponse(
       } else if (source === 'poll') {
         throw error;
       } else if (source === 'evaluation') {
-        const recovered = await recoverAssistantResponse(Runtime, timeoutMs, logger);
+        const recovered = await recoverAssistantResponse(Runtime, timeoutMs, logger, minTurnIndex);
         if (recovered) {
           return recovered;
         }
@@ -75,13 +91,30 @@ export async function waitForAssistantResponse(
     throw new Error('Failed to capture assistant response');
   }
 
-  const parsed = await parseAssistantEvaluationResult(Runtime, evaluation, timeoutMs, logger);
+  const parsed = await parseAssistantEvaluationResult(Runtime, evaluation, logger);
   if (!parsed) {
+    let remainingMs = Math.max(0, timeoutMs - (Date.now() - start));
+    if (remainingMs > 0) {
+      const recovered = await recoverAssistantResponse(Runtime, remainingMs, logger, minTurnIndex);
+      if (recovered) {
+        return recovered;
+      }
+      remainingMs = Math.max(0, timeoutMs - (Date.now() - start));
+      if (remainingMs > 0) {
+        const polled = await Promise.race([
+          pollerPromise.catch(() => null),
+          delay(remainingMs).then(() => null),
+        ]);
+        if (polled && polled.kind === 'poll') {
+          return polled.value;
+        }
+      }
+    }
     await logDomFailure(Runtime, logger, 'assistant-response');
     throw new Error('Unable to capture assistant response');
   }
 
-  const refreshed = await refreshAssistantSnapshot(Runtime, parsed, logger);
+  const refreshed = await refreshAssistantSnapshot(Runtime, parsed, logger, minTurnIndex);
   const candidate = refreshed ?? parsed;
   // The evaluation path can race ahead of completion. If ChatGPT is still streaming, wait for the watchdog poller.
   const elapsedMs = Date.now() - start;
@@ -91,23 +124,41 @@ export async function waitForAssistantResponse(
       isStopButtonVisible(Runtime),
       isCompletionVisible(Runtime),
     ]);
-    if (stopVisible && !completionVisible) {
+    if (stopVisible) {
       logger('Assistant still generating; waiting for completion');
-      const completed = await pollAssistantCompletion(Runtime, remainingMs);
+      const completed = await pollAssistantCompletion(Runtime, remainingMs, minTurnIndex);
       if (completed) {
         return completed;
       }
+    } else if (completionVisible) {
+      // No-op: completion UI surfaced and stop button is gone.
     }
   }
 
   return candidate;
 }
 
-export async function readAssistantSnapshot(Runtime: ChromeClient['Runtime']): Promise<AssistantSnapshot | null> {
-  const { result } = await Runtime.evaluate({ expression: buildAssistantSnapshotExpression(), returnByValue: true });
+export async function readAssistantSnapshot(
+  Runtime: ChromeClient['Runtime'],
+  minTurnIndex?: number,
+): Promise<AssistantSnapshot | null> {
+  const { result } = await Runtime.evaluate({
+    expression: buildAssistantSnapshotExpression(minTurnIndex),
+    returnByValue: true,
+  });
   const value = result?.value;
   if (value && typeof value === 'object') {
-    return value as AssistantSnapshot;
+    const snapshot = value as AssistantSnapshot;
+    if (typeof minTurnIndex === 'number' && Number.isFinite(minTurnIndex)) {
+      const turnIndex = typeof snapshot.turnIndex === 'number' ? snapshot.turnIndex : null;
+      if (turnIndex === null) {
+        return snapshot;
+      }
+      if (turnIndex < minTurnIndex) {
+        return null;
+      }
+    }
+    return snapshot;
   }
   return null;
 }
@@ -144,13 +195,34 @@ export function buildConversationDebugExpressionForTest(): string {
   return buildConversationDebugExpression();
 }
 
+export function buildMarkdownFallbackExtractorForTest(minTurnLiteral = '0'): string {
+  return buildMarkdownFallbackExtractor(minTurnLiteral);
+}
+
+export function buildCopyExpressionForTest(
+  meta: { messageId?: string | null; turnId?: string | null } = {},
+): string {
+  return buildCopyExpression(meta);
+}
+
 async function recoverAssistantResponse(
   Runtime: ChromeClient['Runtime'],
   timeoutMs: number,
   logger: BrowserLogger,
+  minTurnIndex?: number,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
-  const snapshot = await waitForAssistantSnapshot(Runtime, Math.min(timeoutMs, 10_000));
-  const recovered = normalizeAssistantSnapshot(snapshot);
+  const recoveryTimeoutMs = Math.max(0, timeoutMs);
+  if (recoveryTimeoutMs === 0) {
+    return null;
+  }
+  const recovered = await waitForCondition(
+    async () => {
+      const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex);
+      return normalizeAssistantSnapshot(snapshot);
+    },
+    recoveryTimeoutMs,
+    400,
+  );
   if (recovered) {
     logger('Recovered assistant response via polling fallback');
     return recovered;
@@ -160,10 +232,9 @@ async function recoverAssistantResponse(
 }
 
 async function parseAssistantEvaluationResult(
-  Runtime: ChromeClient['Runtime'],
+  _Runtime: ChromeClient['Runtime'],
   evaluation: Awaited<ReturnType<ChromeClient['Runtime']['evaluate']>>,
-  timeoutMs: number,
-  logger: BrowserLogger,
+  _logger: BrowserLogger,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
   const { result } = evaluation;
   if (result.type === 'object' && result.value && typeof result.value === 'object' && 'text' in result.value) {
@@ -181,21 +252,16 @@ async function parseAssistantEvaluationResult(
         : undefined;
     const text = cleanAssistantText(String((result.value as { text: unknown }).text ?? ''));
     const normalized = text.toLowerCase();
-    if (
-      normalized.includes('answer now') &&
-      (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))
-    ) {
-      const recovered = await recoverAssistantResponse(Runtime, Math.min(timeoutMs, 10_000), logger);
-      return recovered ?? null;
+    if (isAnswerNowPlaceholderText(normalized)) {
+      return null;
     }
     return { text, html, meta: { turnId, messageId } };
   }
   const fallbackText = typeof result.value === 'string' ? cleanAssistantText(result.value as string) : '';
   if (!fallbackText) {
-    const recovered = await recoverAssistantResponse(Runtime, Math.min(timeoutMs, 10_000), logger);
-    if (recovered) {
-      return recovered;
-    }
+    return null;
+  }
+  if (isAnswerNowPlaceholderText(fallbackText.toLowerCase())) {
     return null;
   }
   return { text: fallbackText, html: undefined, meta: {} };
@@ -205,20 +271,44 @@ async function refreshAssistantSnapshot(
   Runtime: ChromeClient['Runtime'],
   current: { text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } },
   logger: BrowserLogger,
+  minTurnIndex?: number,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
-  const latestSnapshot = await waitForCondition(() => readAssistantSnapshot(Runtime), 5_000, 300);
-  const latest = normalizeAssistantSnapshot(latestSnapshot);
-  if (!latest) {
+  const deadline = Date.now() + 5_000;
+  let best: { text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null = null;
+  let stableCycles = 0;
+  const stableTarget = 3;
+  while (Date.now() < deadline) {
+    // Learned: short/fast answers can race; poll a few extra cycles to pick up messageId + full text.
+    const latestSnapshot = await readAssistantSnapshot(Runtime, minTurnIndex).catch(() => null);
+    const latest = normalizeAssistantSnapshot(latestSnapshot);
+    if (latest) {
+      if (
+        !best ||
+        latest.text.length > best.text.length ||
+        (!best.meta.messageId && latest.meta.messageId)
+      ) {
+        best = latest;
+        stableCycles = 0;
+      } else if (latest.text.trim() === best.text.trim()) {
+        stableCycles += 1;
+      }
+    }
+    if (best && stableCycles >= stableTarget) {
+      break;
+    }
+    await delay(300);
+  }
+  if (!best) {
     return null;
   }
   const currentLength = cleanAssistantText(current.text).trim().length;
-  const latestLength = latest.text.length;
-  const hasBetterId = !current.meta?.messageId && Boolean(latest.meta.messageId);
+  const latestLength = best.text.length;
+  const hasBetterId = !current.meta?.messageId && Boolean(best.meta.messageId);
   const isLonger = latestLength > currentLength;
-  const hasDifferentText = latest.text.trim() !== current.text.trim();
+  const hasDifferentText = best.text.trim() !== current.text.trim();
   if (isLonger || hasBetterId || hasDifferentText) {
     logger('Refreshed assistant response via latest snapshot');
-    return latest;
+    return best;
   }
   return null;
 }
@@ -237,19 +327,21 @@ async function terminateRuntimeExecution(Runtime: ChromeClient['Runtime']): Prom
 async function pollAssistantCompletion(
   Runtime: ChromeClient['Runtime'],
   timeoutMs: number,
+  minTurnIndex?: number,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
   const watchdogDeadline = Date.now() + timeoutMs;
   let previousLength = 0;
   let stableCycles = 0;
-  const requiredStableCycles = 6;
+  let lastChangeAt = Date.now();
   while (Date.now() < watchdogDeadline) {
-    const snapshot = await readAssistantSnapshot(Runtime);
+    const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex);
     const normalized = normalizeAssistantSnapshot(snapshot);
     if (normalized) {
       const currentLength = normalized.text.length;
       if (currentLength > previousLength) {
         previousLength = currentLength;
         stableCycles = 0;
+        lastChangeAt = Date.now();
       } else {
         stableCycles += 1;
       }
@@ -257,10 +349,20 @@ async function pollAssistantCompletion(
         isStopButtonVisible(Runtime),
         isCompletionVisible(Runtime),
       ]);
-      // Require at least 2 stable cycles even when completion buttons are visible
-      // to ensure DOM text has fully rendered (buttons can appear before text settles)
-      if ((completionVisible && stableCycles >= 2) || (!stopVisible && stableCycles >= requiredStableCycles)) {
-        return normalized;
+      const shortAnswer = currentLength > 0 && currentLength < 16;
+      // Learned: short answers need a longer stability window or they truncate.
+      const completionStableTarget = shortAnswer ? 12 : currentLength < 40 ? 8 : 4;
+      const requiredStableCycles = shortAnswer ? 12 : 6;
+      const stableMs = Date.now() - lastChangeAt;
+      const minStableMs = shortAnswer ? 8000 : 1200;
+      // Require stop button to disappear before treating completion as final.
+      if (!stopVisible) {
+        const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
+        const completionEnough =
+          completionVisible && stableCycles >= completionStableTarget && stableMs >= minStableMs;
+        if (completionEnough || stableEnough) {
+          return normalized;
+        }
       }
     } else {
       previousLength = 0;
@@ -338,7 +440,11 @@ function normalizeAssistantSnapshot(
   const normalized = text.toLowerCase();
   // "Pro thinking" often renders a placeholder turn containing an "Answer now" gate.
   // Treat it as incomplete so browser mode keeps waiting for the real assistant text.
-  if (normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
+  if (isAnswerNowPlaceholderText(normalized)) {
+    return null;
+  }
+  // Ignore user echo turns that can show up in project view fallbacks.
+  if (normalized.startsWith('you said')) {
     return null;
   }
   return {
@@ -346,10 +452,6 @@ function normalizeAssistantSnapshot(
     html: snapshot?.html ?? undefined,
     meta: { turnId: snapshot?.turnId ?? undefined, messageId: snapshot?.messageId ?? undefined },
   };
-}
-
-async function waitForAssistantSnapshot(Runtime: ChromeClient['Runtime'], timeoutMs: number): Promise<AssistantSnapshot | null> {
-  return waitForCondition(() => readAssistantSnapshot(Runtime), timeoutMs);
 }
 
 async function waitForCondition<T>(getter: () => Promise<T | null>, timeoutMs: number, pollIntervalMs = 400): Promise<T | null> {
@@ -364,17 +466,41 @@ async function waitForCondition<T>(getter: () => Promise<T | null>, timeoutMs: n
   return null;
 }
 
-function buildAssistantSnapshotExpression(): string {
+function buildAssistantSnapshotExpression(minTurnIndex?: number): string {
+  const minTurnLiteral =
+    typeof minTurnIndex === 'number' && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
+      ? Math.floor(minTurnIndex)
+      : -1;
   return `(() => {
+    const MIN_TURN_INDEX = ${minTurnLiteral};
+    // Learned: the default turn DOM misses project view; keep a fallback extractor.
     ${buildAssistantExtractor('extractAssistantTurn')}
-    return extractAssistantTurn();
+    const extracted = extractAssistantTurn();
+    const isPlaceholder = (snapshot) => {
+      const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
+      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
+      if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
+        return true;
+      }
+      return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
+    };
+    if (extracted && extracted.text && !isPlaceholder(extracted)) {
+      return extracted;
+    }
+    // Fallback for ChatGPT project view: answers can live outside conversation turns.
+    const fallback = ${buildMarkdownFallbackExtractor('MIN_TURN_INDEX')};
+    return fallback ?? extracted;
   })()`;
 }
 
-function buildResponseObserverExpression(timeoutMs: number): string {
+function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: number): string {
   const selectorsLiteral = JSON.stringify(ANSWER_SELECTORS);
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
+  const minTurnLiteral =
+    typeof minTurnIndex === 'number' && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
+      ? Math.floor(minTurnIndex)
+      : -1;
   return `(() => {
     ${buildClickDispatcher()}
     const SELECTORS = ${selectorsLiteral};
@@ -382,13 +508,18 @@ function buildResponseObserverExpression(timeoutMs: number): string {
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
+    // Learned: settling avoids capturing mid-stream HTML; keep short.
     const settleDelayMs = 800;
     const isAnswerNowPlaceholder = (snapshot) => {
-      const normalized = String(snapshot?.text ?? '').toLowerCase();
+      const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
+      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
+      if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
+        return true;
+      }
       return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
     };
 
-    // Helper to detect assistant turns - matches buildAssistantExtractor logic
+    // Helper to detect assistant turns - must match buildAssistantExtractor logic for consistency.
     const isAssistantTurn = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
@@ -400,7 +531,21 @@ function buildResponseObserverExpression(timeoutMs: number): string {
       return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
     };
 
+    const MIN_TURN_INDEX = ${minTurnLiteral};
     ${buildAssistantExtractor('extractFromTurns')}
+    // Learned: some layouts (project view) render markdown without assistant turn wrappers.
+    const extractFromMarkdownFallback = ${buildMarkdownFallbackExtractor('MIN_TURN_INDEX')};
+
+    const acceptSnapshot = (snapshot) => {
+      if (!snapshot) return null;
+      const index = typeof snapshot.turnIndex === 'number' ? snapshot.turnIndex : -1;
+      if (MIN_TURN_INDEX >= 0) {
+        if (index < 0 || index < MIN_TURN_INDEX) {
+          return null;
+        }
+      }
+      return snapshot;
+    };
 
     const captureViaObserver = () =>
       new Promise((resolve, reject) => {
@@ -408,7 +553,15 @@ function buildResponseObserverExpression(timeoutMs: number): string {
         let stopInterval = null;
         const observer = new MutationObserver(() => {
           const extractedRaw = extractFromTurns();
-          const extracted = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+          const extractedCandidate =
+            extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+          let extracted = acceptSnapshot(extractedCandidate);
+          if (!extracted) {
+            const fallbackRaw = extractFromMarkdownFallback();
+            const fallbackCandidate =
+              fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
+            extracted = acceptSnapshot(fallbackCandidate);
+          }
           if (extracted) {
             observer.disconnect();
             if (stopInterval) {
@@ -445,7 +598,7 @@ function buildResponseObserverExpression(timeoutMs: number): string {
         }, ${timeoutMs});
       });
 
-    // Check if the last assistant turn has finished (scoped to avoid detecting old turns)
+    // Check if the last assistant turn has finished (scoped to avoid detecting old turns).
     const isLastAssistantTurnFinished = () => {
       const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
       let lastAssistantTurn = null;
@@ -464,30 +617,56 @@ function buildResponseObserverExpression(timeoutMs: number): string {
     };
 
     const waitForSettle = async (snapshot) => {
-      const settleWindowMs = 5000;
+      // Learned: short answers can be 1-2 tokens; enforce longer settle windows to avoid truncation.
+      const initialLength = snapshot?.text?.length ?? 0;
+      const shortAnswer = initialLength > 0 && initialLength < 16;
+      const settleWindowMs = shortAnswer ? 12_000 : 5_000;
       const settleIntervalMs = 400;
-        const deadline = Date.now() + settleWindowMs;
-        let latest = snapshot;
-        let lastLength = snapshot?.text?.length ?? 0;
-        while (Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
-          const refreshed = extractFromTurns();
-          if (refreshed && !isAnswerNowPlaceholder(refreshed) && (refreshed.text?.length ?? 0) >= lastLength) {
-            latest = refreshed;
-            lastLength = refreshed.text?.length ?? lastLength;
-          }
-          const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
-          const finishedVisible = isLastAssistantTurnFinished();
-
-          if (!stopVisible || finishedVisible) {
-            break;
-          }
+      const deadline = Date.now() + settleWindowMs;
+      let latest = snapshot;
+      let lastLength = snapshot?.text?.length ?? 0;
+      let stableCycles = 0;
+      const stableTarget = shortAnswer ? 6 : 3;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
+        const refreshedRaw = extractFromTurns();
+        const refreshedCandidate =
+          refreshedRaw && !isAnswerNowPlaceholder(refreshedRaw) ? refreshedRaw : null;
+        let refreshed = acceptSnapshot(refreshedCandidate);
+        if (!refreshed) {
+          const fallbackRaw = extractFromMarkdownFallback();
+          const fallbackCandidate =
+            fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
+          refreshed = acceptSnapshot(fallbackCandidate);
         }
-        return latest ?? snapshot;
-      };
+        const nextLength = refreshed?.text?.length ?? lastLength;
+        if (refreshed && nextLength >= lastLength) {
+          latest = refreshed;
+        }
+        if (nextLength > lastLength) {
+          lastLength = nextLength;
+          stableCycles = 0;
+        } else {
+          stableCycles += 1;
+        }
+        const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
+        const finishedVisible = isLastAssistantTurnFinished();
+
+        if (finishedVisible || (!stopVisible && stableCycles >= stableTarget)) {
+          break;
+        }
+      }
+      return latest ?? snapshot;
+    };
 
     const extractedRaw = extractFromTurns();
-    const extracted = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+    const extractedCandidate = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+    let extracted = acceptSnapshot(extractedCandidate);
+    if (!extracted) {
+      const fallbackRaw = extractFromMarkdownFallback();
+      const fallbackCandidate = fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
+      extracted = acceptSnapshot(fallbackCandidate);
+    }
     if (extracted) {
       return waitForSettle(extracted);
     }
@@ -544,22 +723,164 @@ function buildAssistantExtractor(functionName: string): string {
       }
       const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) ?? turn;
       expandCollapsibles(messageRoot);
-      const preferred = messageRoot.querySelector('.markdown') || messageRoot.querySelector('[data-message-content]');
-      if (!preferred) {
+      const preferred =
+        (messageRoot.matches?.('.markdown') || messageRoot.matches?.('[data-message-content]') ? messageRoot : null) ||
+        messageRoot.querySelector('.markdown') ||
+        messageRoot.querySelector('[data-message-content]') ||
+        messageRoot.querySelector('[data-testid*="message"]') ||
+        messageRoot.querySelector('[data-testid*="assistant"]') ||
+        messageRoot.querySelector('.prose') ||
+        messageRoot.querySelector('[class*="markdown"]');
+      const contentRoot = preferred ?? messageRoot;
+      if (!contentRoot) {
         continue;
       }
-      const innerText = preferred?.innerText ?? '';
-      const textContent = preferred?.textContent ?? '';
+      const innerText = contentRoot?.innerText ?? '';
+      const textContent = contentRoot?.textContent ?? '';
       const text = innerText.trim().length > 0 ? innerText : textContent;
-      const html = preferred?.innerHTML ?? '';
+      const html = contentRoot?.innerHTML ?? '';
       const messageId = messageRoot.getAttribute('data-message-id');
       const turnId = messageRoot.getAttribute('data-testid');
       if (text.trim()) {
-        return { text, html, messageId, turnId };
+        return { text, html, messageId, turnId, turnIndex: index };
       }
     }
     return null;
   };`;
+}
+
+function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
+  const turnIndexValue = minTurnLiteral ? `(${minTurnLiteral} >= 0 ? ${minTurnLiteral} : null)` : 'null';
+  return `(() => {
+    const MIN_TURN_INDEX = ${turnIndexValue};
+    const roots = [
+      document.querySelector('section[data-testid="screen-threadFlyOut"]'),
+      document.querySelector('[data-testid="chat-thread"]'),
+      document.querySelector('main'),
+      document.querySelector('[role="main"]'),
+    ].filter(Boolean);
+    if (roots.length === 0) return null;
+    const markdownSelector = '.markdown,[data-message-content],[data-testid*="message"],.prose,[class*="markdown"]';
+    const isExcluded = (node) =>
+      Boolean(
+        node?.closest?.(
+          'nav, aside, [data-testid*="sidebar"], [data-testid*="chat-history"], [data-testid*="composer"], form',
+        ),
+      );
+    const scoreRoot = (node) => {
+      const actions = node.querySelectorAll('${FINISHED_ACTIONS_SELECTOR}').length;
+      const assistants = node.querySelectorAll('[data-message-author-role="assistant"], [data-turn="assistant"]').length;
+      const markdowns = node.querySelectorAll(markdownSelector).length;
+      return actions * 10 + assistants * 5 + markdowns;
+    };
+    let root = roots[0];
+    let bestScore = scoreRoot(root);
+    for (let i = 1; i < roots.length; i += 1) {
+      const candidate = roots[i];
+      const score = scoreRoot(candidate);
+      if (score > bestScore) {
+        bestScore = score;
+        root = candidate;
+      }
+    }
+    if (!root) return null;
+    const CONVERSATION_SELECTOR = '${CONVERSATION_TURN_SELECTOR}';
+    const turnNodes = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+    const hasTurns = turnNodes.length > 0;
+    const resolveTurnIndex = (node) => {
+      const turn = node?.closest?.(CONVERSATION_SELECTOR);
+      if (!turn) return null;
+      const idx = turnNodes.indexOf(turn);
+      return idx >= 0 ? idx : null;
+    };
+    const isAfterMinTurn = (node) => {
+      if (MIN_TURN_INDEX === null) return true;
+      if (!hasTurns) return true;
+      const idx = resolveTurnIndex(node);
+      return idx !== null && idx >= MIN_TURN_INDEX;
+    };
+    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    const collectUserText = (scope) => {
+      if (!scope?.querySelectorAll) return '';
+      const userTurns = Array.from(scope.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'));
+      const lastUser = userTurns[userTurns.length - 1];
+      return lastUser ? normalize(lastUser.innerText || lastUser.textContent || '') : '';
+    };
+    const userText = collectUserText(root) || collectUserText(document);
+    const isUserEcho = (text) => {
+      if (!userText) return false;
+      const normalized = normalize(text);
+      if (!normalized) return false;
+      return normalized === userText || normalized.startsWith(userText);
+    };
+    const markdowns = Array.from(root.querySelectorAll(markdownSelector))
+      .filter((node) => !isExcluded(node))
+      .filter((node) => {
+        const container = node.closest('[data-message-author-role], [data-turn]');
+        if (!container) return true;
+        const role =
+          (container.getAttribute('data-message-author-role') || container.getAttribute('data-turn') || '').toLowerCase();
+        return role !== 'user';
+      });
+    if (markdowns.length === 0) return null;
+    const actionButtons = Array.from(root.querySelectorAll('${FINISHED_ACTIONS_SELECTOR}'));
+    const actionMarkdowns = [];
+    for (const button of actionButtons) {
+      const container =
+        button.closest('${CONVERSATION_TURN_SELECTOR}') ||
+        button.closest('[data-message-author-role="assistant"], [data-turn="assistant"]') ||
+        button.closest('[data-message-author-role], [data-turn]') ||
+        button.closest('[data-testid*="assistant"]');
+      if (!container || container === root || container === document.body) continue;
+      const scoped = Array.from(container.querySelectorAll(markdownSelector))
+        .filter((node) => !isExcluded(node))
+        .filter((node) => {
+          const roleNode = node.closest('[data-message-author-role], [data-turn]');
+          if (!roleNode) return true;
+          const role =
+            (roleNode.getAttribute('data-message-author-role') || roleNode.getAttribute('data-turn') || '').toLowerCase();
+          return role !== 'user';
+        });
+      if (scoped.length === 0) continue;
+      for (const node of scoped) {
+        actionMarkdowns.push(node);
+      }
+    }
+    const assistantMarkdowns = markdowns.filter((node) => {
+      const container = node.closest('[data-message-author-role], [data-turn], [data-testid*="assistant"]');
+      if (!container) return false;
+      const role =
+        (container.getAttribute('data-message-author-role') || container.getAttribute('data-turn') || '').toLowerCase();
+      if (role === 'assistant') return true;
+      const testId = (container.getAttribute('data-testid') || '').toLowerCase();
+      return testId.includes('assistant');
+    });
+    const hasAssistantIndicators = Boolean(
+      root.querySelector('${FINISHED_ACTIONS_SELECTOR}') ||
+        root.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"], [data-testid*="assistant"]'),
+    );
+    const allowMarkdownFallback = hasAssistantIndicators || hasTurns || Boolean(userText);
+    const candidates =
+      actionMarkdowns.length > 0
+        ? actionMarkdowns
+        : assistantMarkdowns.length > 0
+          ? assistantMarkdowns
+          : allowMarkdownFallback
+            ? markdowns
+            : [];
+    for (let i = candidates.length - 1; i >= 0; i -= 1) {
+      const node = candidates[i];
+      if (!node) continue;
+      if (!isAfterMinTurn(node)) continue;
+      const text = (node.innerText || node.textContent || '').trim();
+      if (!text) continue;
+      if (isUserEcho(text)) continue;
+      const html = node.innerHTML ?? '';
+      const turnIndex = resolveTurnIndex(node);
+      return { text, html, messageId: null, turnId: null, turnIndex };
+    }
+    return null;
+  })`;
 }
 
 function buildCopyExpression(meta: { messageId?: string | null; turnId?: string | null }): string {
@@ -586,13 +907,41 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
           return button;
         }
       }
+      const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
+      const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
+      const isAssistantTurn = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+        if (turnAttr === 'assistant') return true;
+        const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+        if (role === 'assistant') return true;
+        const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+        if (testId.includes('assistant')) return true;
+        return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+      };
+      const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+      for (let i = turns.length - 1; i >= 0; i -= 1) {
+        const turn = turns[i];
+        if (!isAssistantTurn(turn)) continue;
+        const button = turn.querySelector(BUTTON_SELECTOR);
+        if (button) {
+          return button;
+        }
+      }
       const all = Array.from(document.querySelectorAll(BUTTON_SELECTOR));
-      return all.at(-1) ?? null;
+      for (let i = all.length - 1; i >= 0; i -= 1) {
+        const button = all[i];
+        const turn = button?.closest?.(CONVERSATION_SELECTOR);
+        if (turn && isAssistantTurn(turn)) {
+          return button;
+        }
+      }
+      return null;
     };
 
     const interceptClipboard = () => {
       const clipboard = navigator.clipboard;
-      const state = { text: '' };
+      const state = { text: '', updatedAt: 0 };
       if (!clipboard) {
         return { state, restore: () => {} };
       }
@@ -600,6 +949,7 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
       const originalWrite = clipboard.write;
       clipboard.writeText = (value) => {
         state.text = typeof value === 'string' ? value : '';
+        state.updatedAt = Date.now();
         return Promise.resolve();
       };
       clipboard.write = async (items) => {
@@ -612,11 +962,13 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
               const blob = await item.getType('text/plain');
               const text = await blob.text();
               state.text = text ?? '';
+              state.updatedAt = Date.now();
               break;
             }
           }
         } catch {
           state.text = '';
+          state.updatedAt = Date.now();
         }
         return Promise.resolve();
       };
@@ -656,22 +1008,37 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
 
           const readIntercepted = () => {
             const markdown = interception.state.text ?? '';
-            return { success: Boolean(markdown.trim()), markdown };
+            const updatedAt = interception.state.updatedAt ?? 0;
+            return { success: Boolean(markdown.trim()), markdown, updatedAt };
+          };
+
+          let lastText = '';
+          let stableTicks = 0;
+          const requiredStableTicks = 3;
+          const requiredStableMs = 250;
+          const maybeFinish = () => {
+            const payload = readIntercepted();
+            if (!payload.success) return;
+            if (payload.markdown !== lastText) {
+              lastText = payload.markdown;
+              stableTicks = 0;
+              return;
+            }
+            stableTicks += 1;
+            const ageMs = Date.now() - (payload.updatedAt || 0);
+            if (stableTicks >= requiredStableTicks && ageMs >= requiredStableMs) {
+              finish(payload);
+            }
           };
 
           const handleCopy = () => {
-            finish(readIntercepted());
+            maybeFinish();
           };
 
           button.addEventListener('copy', handleCopy, true);
           button.scrollIntoView({ block: 'center', behavior: 'instant' });
           dispatchClickSequence(button);
-          pollId = setInterval(() => {
-            const payload = readIntercepted();
-            if (payload.success) {
-              finish(payload);
-            }
-          }, 100);
+          pollId = setInterval(maybeFinish, 120);
           timeoutId = setTimeout(() => {
             button.removeEventListener('copy', handleCopy, true);
             finish({ success: false, status: 'timeout' });
@@ -695,6 +1062,7 @@ interface AssistantSnapshot {
   html?: string;
   messageId?: string | null;
   turnId?: string | null;
+  turnIndex?: number | null;
 }
 
 const LANGUAGE_TAGS = new Set(

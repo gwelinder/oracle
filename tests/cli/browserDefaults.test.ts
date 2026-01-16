@@ -53,6 +53,7 @@ describe('applyBrowserDefaultsFromConfig', () => {
         chromeCookiePath: '/tmp/cookies',
         timeoutMs: 120_000,
         inputTimeoutMs: 15_000,
+        cookieSyncWaitMs: 4_000,
         headless: true,
         hideWindow: true,
         keepBrowser: true,
@@ -66,8 +67,65 @@ describe('applyBrowserDefaultsFromConfig', () => {
     expect(options.browserCookiePath).toBe('/tmp/cookies');
     expect(options.browserTimeout).toBe('120000');
     expect(options.browserInputTimeout).toBe('15000');
+    expect(options.browserCookieWait).toBe('4000');
     expect(options.browserHeadless).toBe(true);
     expect(options.browserHideWindow).toBe(true);
     expect(options.browserKeepBrowser).toBe(true);
+  });
+
+  test('applies thinking time when CLI flag is untouched', () => {
+    const options: BrowserDefaultsOptions = {};
+    const config: UserConfig = {
+      browser: {
+        thinkingTime: 'extended',
+      },
+    };
+
+    applyBrowserDefaultsFromConfig(options, config, (_key) => 'default');
+
+    expect(options.browserThinkingTime).toBe('extended');
+  });
+
+  test('does not override thinking time when CLI provided a value', () => {
+    const options: BrowserDefaultsOptions = { browserThinkingTime: 'light' };
+    const config: UserConfig = {
+      browser: {
+        thinkingTime: 'heavy',
+      },
+    };
+
+    const source = (key: keyof BrowserDefaultsOptions) => (key === 'browserThinkingTime' ? 'cli' : 'default');
+    applyBrowserDefaultsFromConfig(options, config, source);
+
+    expect(options.browserThinkingTime).toBe('light');
+  });
+
+  test('applies manual-login defaults from config when CLI flags are untouched', () => {
+    const options: BrowserDefaultsOptions = {};
+    const config: UserConfig = {
+      browser: {
+        manualLogin: true,
+        manualLoginProfileDir: '/tmp/oracle-profile',
+      },
+    };
+
+    applyBrowserDefaultsFromConfig(options, config, (_key) => 'default');
+
+    expect(options.browserManualLogin).toBe(true);
+    expect(options.browserManualLoginProfileDir).toBe('/tmp/oracle-profile');
+  });
+
+  test('does not override manual-login when CLI enabled it', () => {
+    const options: BrowserDefaultsOptions = { browserManualLogin: true };
+    const config: UserConfig = {
+      browser: {
+        manualLogin: false,
+      },
+    };
+
+    const source = (key: keyof BrowserDefaultsOptions) => (key === 'browserManualLogin' ? 'cli' : 'default');
+    applyBrowserDefaultsFromConfig(options, config, source);
+
+    expect(options.browserManualLogin).toBe(true);
   });
 });

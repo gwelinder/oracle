@@ -1,6 +1,113 @@
 # Changelog
 
-## 0.7.2 — Unreleased
+## 0.8.5 — Unreleased
+
+### Added
+- Bridge: add the bridge workflow + MCP browser controls for remote ChatGPT sessions. Original PR #42 by Kyle McCleary (@kmccleary3301) — thank you!
+
+## 0.8.4 — 2026-01-04
+
+### Changed
+- Deps: update zod to `4.3.5`.
+- Deps: add `qs` as a direct dependency (avoids Dependabot pnpm transitive-update failures).
+
+### Fixed
+- Browser: fix attachment uploads in the current ChatGPT composer (avoid duplicate uploads; avoid image-only inputs for non-image files). Original PR #60 by Alex Naidis (@TheCrazyLex) — thank you!
+
+## 0.8.3 — 2025-12-31
+
+### Added
+- Config: allow `browser.forceEnglishLocale` to opt into `--lang/--accept-lang` for browser runs.
+- Browser: add `--browser-cookie-wait` / `browser.cookieSyncWaitMs` to wait once and retry cookie sync. Original PR #55 by bheemreddy-samsara — thank you!
+
+### Fixed
+- Browser: avoid stray attachment removal clicks while still detecting stale chips, and allow completed uploads even if send stays disabled. Original PR #56 by Alex Naidis (@TheCrazyLex) — thank you!
+- Browser: dismiss blocking modals when a custom ChatGPT project URL is missing, and harden attachment uploads (force input/change events; retry via DataTransfer; treat “file selected” as insufficient unless the composer shows attachment UI).
+- Browser: prefer a trusted (CDP) click on the composer “+” button so attachment uploads work even when ChatGPT ignores synthetic clicks.
+
+## 0.8.2 — 2025-12-30
+
+### Changed
+- Release: disable npm progress output in Codex runs via `scripts/release.sh`.
+
+### Docs
+- Release checklist now requires GitHub release notes to match the full changelog section.
+
+### Tests
+- Live: tolerate truncated prompt echo in browser model selection checks.
+- Live: skip mixed OpenRouter assertions when a provider returns empty output.
+- Live: wait for browser runtime hint before reattaching in the reattach smoke.
+
+## 0.8.1 — 2025-12-30
+
+### Added
+- Config: allow `browser.thinkingTime`, `browser.manualLogin`, and `browser.manualLoginProfileDir` defaults in `~/.oracle/config.json`.
+
+### Fixed
+- Browser: thinking-time chip selection now recognizes "Pro" labeled composer pills. Original PR #54 by Alex Naidis (@TheCrazyLex) — thank you!
+- Browser: when a custom ChatGPT project URL is missing, retry on the base URL with a longer prompt timeout.
+- Browser: increase attachment wait budget and proceed with sending the prompt if completion times out (skip attachment gating/verification).
+- CLI: disable OSC progress output when running under Codex (`CODEX_MANAGED_BY_NPM=1`) to avoid spinner noise.
+
+### Tests
+- Stabilize OSC progress detection tests when `CODEX_MANAGED_BY_NPM=1` is set.
+- Add fast live browser runs for missing-project fallback + attachment uploads (`test:live:fast`).
+
+## 0.8.0 — 2025-12-28
+
+### Highlights
+- Browser reliability push: stronger reattach, response capture, and attachment uploads (fewer prompt-echoes, truncations, and duplicate uploads).
+- Cookie stack revamp via Sweet Cookie (no native addons) with better inline-cookie handling; Gemini web now works on Windows and honors `--browser-cookie-path`.
+- New `--browser-model-strategy` flag to control ChatGPT model selection (`select`/`current`/`ignore`) in browser mode. Original PR #49 by @djangonavarro220 — thank you!
+
+### Improvements
+- Browser reattach now preserves `/c/` conversation URLs and project URL prefixes, validates conversation ids, and recovers from mid-run disconnects or capture failures.
+- Response capture is more stable: wider selectors, assistant-only copy-turn capture, prompt-echo avoidance, and stop-button/clipboard stability checks.
+- Attachment uploads are idempotent and count-aware (composer + chips + file inputs), with explicit completion waits and stale-input cleanup.
+- Login flow adds richer diagnostics, auto-accepts the “Welcome back” picker, and always logs the active ChatGPT URL.
+- Cookie handling prefers live Chrome over legacy `~/.oracle/cookies.json`; Gemini web can use inline cookies when sync is disabled.
+
+### Fixes
+- CLI: stream Markdown via Markdansi’s block renderer and guard the live renderer for non‑TTY edge cases.
+- Tests: stabilize browser live tests (serialization + project URL fallback) and add response-observer assertions; browser smoke runs are faster.
+
+## 0.7.6 — 2025-12-25
+
+### Changed
+- CLI: compact finish line summary across API, browser, and session views.
+- CLI: token counts now render as `↑in ↓out ↻reasoning Δtotal`.
+
+### Fixed
+- CLI/Browser: ignore duplicate `--file` inputs (log once) and improve attachment presence detection so re-runs don’t spam “already attached” upload errors.
+- Browser: harden session reattach (better conversation targeting, longer prompt-commit wait, avoid closing shared DevTools targets).
+- Live tests: add coverage + retries for browser reattach/model selection; tolerate transient OpenRouter free-tier failures.
+
+## 0.7.5 — 2025-12-23
+
+### Fixed
+- Packaging: switch tokentally to npm release so Homebrew installs don't trigger git prepare builds.
+
+## 0.7.4 — 2025-12-23
+
+### Changed
+- Browser: add `--browser-thinking-time <light|standard|extended|heavy>` to select thinking-time intensity in ChatGPT.
+
+### Fixed
+- Browser: throttle attachment upload pokes and pace multi-file uploads to avoid duplicate “already attached” warnings.
+- Browser: correct GPT-5.2 variant selection (Auto/Thinking/Instant/Pro) with stricter matching and improved testid scoring; thinking-time selection now supports multiple levels. Original PR #45 by Manish Malhotra (@manmal) — thank you!
+- Browser: only reload stalled conversations after an assistant-response failure (and only once), instead of always refreshing after submit.
+
+## 0.7.3 — 2025-12-23
+
+### Changed
+- API: streaming answers in a rich TTY now use Markdansi’s live renderer (`createLiveRenderer`) so we can stream *and* render Markdown in-place.
+
+### Fixed
+- Browser: prevent `chrome-launcher` from auto-killing Chrome on SIGINT so reattach sessions survive Ctrl+C.
+- Sessions: running browser sessions now mark as errored when the Chrome PID/port are no longer reachable.
+- Browser: reattach now recovers even if Chrome was closed by reopening, locating the conversation in the sidebar, and resuming the response.
+
+## 0.7.2 — 2025-12-17
 
 ### Fixed
 - Browser: stop auto-clicking the “Answer now” gate; wait for the full Pro-thinking response instead of skipping it.
@@ -14,7 +121,6 @@
 - API: default model is now `gpt-5.2-pro` (and “Pro” label inference prefers GPT‑5.2 Pro).
 - Tests: updated fixtures/defaults to use `gpt-5.2-pro` instead of `gpt-5.1-pro`.
 - API: clarify `gpt-5.1-pro` as a stable alias that targets `gpt-5.2-pro`.
-- Dependencies: refresh (notably `zod` 4.2.1 and `devtools-protocol` 0.0.1559729).
 - Browser: browser engine GPT selection now supports ChatGPT 5.2 (`gpt-5.2`) and ChatGPT 5.2 Pro (`gpt-5.2-pro`); legacy labels like `gpt-5.1` normalize to 5.2, and “Pro” always resolves to 5.2 Pro (ignores Legacy GPT‑5.1 Pro submenu) with a top-bar label confirmation.
 
 ### Fixed
@@ -48,7 +154,7 @@
 ## 0.6.0 — 2025-12-12
 
 ### Added
-- GPT-5.2 model support (`gpt-5.2` Thinking, `gpt-5.2-instant`, `gpt-5.2-pro`) plus browser `--browser-extended-thinking` automation. Original PR #37 by Nico Bailon (@nicobailon) — thank you!
+- GPT-5.2 model support (`gpt-5.2` Thinking, `gpt-5.2-instant`, `gpt-5.2-pro`) plus browser thinking-time automation. Original PR #37 by Nico Bailon (@nicobailon) — thank you!
 
 ### Changed
 - API: `gpt-5.1-pro` now targets `gpt-5.2-pro` instead of older Pro fallbacks.

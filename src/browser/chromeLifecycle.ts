@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import CDP from 'chrome-remote-interface';
 import { launch, Launcher, type LaunchedChrome } from 'chrome-launcher';
 import type { BrowserLogger, ResolvedBrowserConfig, ChromeClient } from './types.js';
+import { cleanupStaleProfileState } from './profileState.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,6 +29,7 @@ export async function launchChrome(config: ResolvedBrowserConfig, userDataDir: s
         chromePath: config.chromePath ?? undefined,
         chromeFlags,
         userDataDir,
+        handleSIGINT: false,
         port: debugPort ?? undefined,
       });
   const pidLabel = typeof launcher.pid === 'number' ? ` (pid ${launcher.pid})` : '';
@@ -46,6 +48,8 @@ export function registerTerminationHooks(
     isInFlight?: () => boolean;
     /** Persist runtime hints so reattach can find the live Chrome. */
     emitRuntimeHint?: () => Promise<void>;
+    /** Preserve the profile directory even when Chrome is terminated. */
+    preserveUserDataDir?: boolean;
   },
 ): () => void {
   const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
@@ -76,11 +80,23 @@ export function registerTerminationHooks(
         } catch {
           // ignore kill failures
         }
-        await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+        if (opts?.preserveUserDataDir) {
+          // Preserve the profile directory (manual login), but clear reattach hints so we don't
+          // try to reuse a dead DevTools port on the next run.
+          await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: 'never' }).catch(() => undefined);
+        } else {
+          await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+        }
       }
     })().finally(() => {
       const exitCode = signal === 'SIGINT' ? 130 : 1;
-      process.exit(exitCode);
+      // Vitest treats any `process.exit()` call as an unhandled failure, even if mocked.
+      // Keep production behavior (hard-exit on signals) while letting tests observe state changes.
+      process.exitCode = exitCode;
+      const isTestRun = process.env.VITEST === '1' || process.env.NODE_ENV === 'test';
+      if (!isTestRun) {
+        process.exit(exitCode);
+      }
     });
   };
 
@@ -189,6 +205,8 @@ function buildChromeFlags(headless: boolean, debugBindAddress?: string | null): 
     '--disable-features=TranslateUI,AutomationControlled',
     '--mute-audio',
     '--window-size=1280,720',
+    '--lang=en-US',
+    '--accept-lang=en-US,en',
   ];
 
   if (process.platform !== 'win32' && !isWsl()) {
@@ -266,6 +284,7 @@ async function launchWithCustomHost({
     chromePath: chromePath ?? undefined,
     chromeFlags,
     userDataDir,
+    handleSIGINT: false,
     port: requestedPort ?? undefined,
   });
 

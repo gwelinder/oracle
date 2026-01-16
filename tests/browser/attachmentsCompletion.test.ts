@@ -21,7 +21,7 @@ describe('attachment completion fallbacks', () => {
           value: {
             state: 'ready',
             uploading: false,
-            filesAttached: false,
+            filesAttached: true,
             attachedNames: [],
             inputNames: ['oracle-attach-verify.txt'],
           },
@@ -67,7 +67,7 @@ describe('attachment completion fallbacks', () => {
           value: {
             state: 'missing',
             uploading: false,
-            filesAttached: false,
+            filesAttached: true,
             attachedNames: [],
             inputNames: ['oracle-attach-verify.txt'],
           },
@@ -78,6 +78,30 @@ describe('attachment completion fallbacks', () => {
     const promise = waitForAttachmentCompletion(runtime, 10_000, ['oracle-attach-verify.txt']);
     await vi.advanceTimersByTimeAsync(2_000);
     await expect(promise).resolves.toBeUndefined();
+    useRealTime();
+  });
+
+  test('waitForAttachmentCompletion times out when send button stays disabled (upload likely in progress)', async () => {
+    useFakeTime();
+
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            state: 'disabled',
+            uploading: false,
+            filesAttached: true,
+            attachedNames: ['oracle-attach-verify.txt'],
+            inputNames: [],
+          },
+        },
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    const promise = waitForAttachmentCompletion(runtime, 800, ['oracle-attach-verify.txt']);
+    const assertion = expect(promise).rejects.toThrow(/did not finish uploading/i);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await assertion;
     useRealTime();
   });
 
@@ -115,12 +139,13 @@ describe('sent turn attachment verification', () => {
             ok: true,
             text: 'You said:\noracle-attach-verify.txt\nDocument',
             attrs: [],
+            hasAttachmentUi: true,
           },
         },
       }),
     } as unknown as ChromeClient['Runtime'];
 
-    await expect(waitForUserTurnAttachments(runtime, ['oracle-attach-verify.txt'], 1000)).resolves.toBeUndefined();
+    await expect(waitForUserTurnAttachments(runtime, ['oracle-attach-verify.txt'], 1000)).resolves.toBe(true);
   });
 
   test('waitForUserTurnAttachments times out when filename never appears', async () => {
@@ -133,6 +158,7 @@ describe('sent turn attachment verification', () => {
             ok: true,
             text: 'You said:\n(no attachment name here)',
             attrs: [],
+            hasAttachmentUi: true,
           },
         },
       }),
@@ -143,5 +169,48 @@ describe('sent turn attachment verification', () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await assertion;
     useRealTime();
+  });
+
+  test('waitForUserTurnAttachments skips when user turn lacks attachment UI', async () => {
+    useFakeTime();
+
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            ok: true,
+            text: 'You said:\n(no attachment UI here)',
+            attrs: [],
+            hasAttachmentUi: false,
+          },
+        },
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    const promise = waitForUserTurnAttachments(runtime, ['oracle-attach-verify.txt'], 600);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(promise).resolves.toBe(false);
+    useRealTime();
+  });
+
+  test('waitForUserTurnAttachments resolves when attachment UI count satisfies expected files (no filename text)', async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            ok: true,
+            text: 'You said:\n(no attachment name here)',
+            attrs: [],
+            hasAttachmentUi: true,
+            attachmentUiCount: 2,
+            fileCount: 0,
+          },
+        },
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    await expect(
+      waitForUserTurnAttachments(runtime, ['oracle-attach-verify-a.txt', 'oracle-attach-verify-b.txt'], 1000),
+    ).resolves.toBe(true);
   });
 });

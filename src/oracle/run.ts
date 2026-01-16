@@ -5,37 +5,40 @@ import path from "node:path";
 import process from "node:process";
 import { performance } from "node:perf_hooks";
 import type {
-	ClientLike,
-	OracleResponse,
-	ResponseStreamLike,
-	RunOracleDeps,
-	RunOracleOptions,
-	RunOracleResult,
-	ModelName,
-} from "./types.js";
-import { DEFAULT_SYSTEM_PROMPT, MODEL_CONFIGS, TOKENIZER_OPTIONS } from "./config.js";
-import { readFiles } from "./files.js";
-import { buildPrompt, buildRequestBody } from "./request.js";
-import { estimateRequestTokens } from "./tokenEstimate.js";
-import { formatElapsed, formatUSD } from "./format.js";
-import { getFileTokenStats, printFileTokenStats } from "./tokenStats.js";
+  ClientLike,
+  OracleResponse,
+  ResponseStreamLike,
+  RunOracleDeps,
+  RunOracleOptions,
+  RunOracleResult,
+  ModelName,
+} from './types.js';
+import { DEFAULT_SYSTEM_PROMPT, MODEL_CONFIGS, TOKENIZER_OPTIONS } from './config.js';
+import { readFiles } from './files.js';
+import { buildPrompt, buildRequestBody } from './request.js';
+import { estimateRequestTokens } from './tokenEstimate.js';
+import { formatElapsed } from './format.js';
+import { formatFinishLine } from './finishLine.js';
+import { getFileTokenStats, printFileTokenStats } from './tokenStats.js';
 import {
-	OracleResponseError,
-	OracleTransportError,
-	PromptValidationError,
-	describeTransportError,
-	toTransportError,
-} from "./errors.js";
-import { createDefaultClientFactory } from "./client.js";
-import { formatBaseUrlForLog, maskApiKey } from "./logging.js";
-import { startHeartbeat } from "../heartbeat.js";
-import { startOscProgress } from "./oscProgress.js";
-import { createFsAdapter } from "./fsAdapter.js";
-import { resolveGeminiModelId } from "./gemini.js";
-import { resolveClaudeModelId } from "./claude.js";
-import { renderMarkdownAnsi } from "../cli/markdownRenderer.js";
-import { executeBackgroundResponse } from "./background.js";
-import { formatTokenEstimate, formatTokenValue, resolvePreviewMode } from "./runUtils.js";
+  OracleResponseError,
+  OracleTransportError,
+  PromptValidationError,
+  describeTransportError,
+  toTransportError,
+} from './errors.js';
+import { createDefaultClientFactory } from './client.js';
+import { formatBaseUrlForLog, maskApiKey } from './logging.js';
+import { startHeartbeat } from '../heartbeat.js';
+import { startOscProgress } from './oscProgress.js';
+import { createFsAdapter } from './fsAdapter.js';
+import { resolveGeminiModelId } from './gemini.js';
+import { resolveClaudeModelId } from './claude.js';
+import { renderMarkdownAnsi } from '../cli/markdownRenderer.js';
+import { createMarkdownStreamer } from 'markdansi';
+import { executeBackgroundResponse } from './background.js';
+import { formatTokenEstimate, formatTokenValue, resolvePreviewMode } from './runUtils.js';
+import { estimateUsdCost } from 'tokentally';
 import {
 	defaultOpenRouterBaseUrl,
 	isKnownModel,
@@ -46,11 +49,11 @@ import {
 	normalizeOpenRouterBaseUrl,
 } from "./modelResolver.js";
 
+type MarkdownStreamer = ReturnType<typeof createMarkdownStreamer>;
+
 const isStdoutTty = process.stdout.isTTY && chalk.level > 0;
 const dim = (text: string): string => (isStdoutTty ? kleur.dim(text) : text);
-// Default timeout for non-pro API runs (fast models) — give them up to 120s.
 const DEFAULT_TIMEOUT_NON_PRO_MS = 120_000;
-// Pro models (gpt-5.x-pro, etc.) can take 10-60+ minutes; use a generous 90-minute default.
 const DEFAULT_TIMEOUT_PRO_MS = 90 * 60 * 1000;
 
 const defaultWait = (ms: number): Promise<void> =>
@@ -207,7 +210,6 @@ export async function runOracle(
 
 	const minPromptLength = Number.parseInt(process.env.ORACLE_MIN_PROMPT_CHARS ?? "10", 10);
 	const promptLength = options.prompt?.trim().length ?? 0;
-	// Enforce the short-prompt guardrail on pro-tier models because they're costly; cheaper models can run short prompts without blocking.
 	const isProTierModel = isProModel(options.model);
 	if (isProTierModel && !Number.isNaN(minPromptLength) && promptLength < minPromptLength) {
 		throw new PromptValidationError(
@@ -225,7 +227,6 @@ export async function runOracle(
 		openRouterApiKey: resolverOpenRouterApiKey,
 	});
 	const isLongRunningModel = isProTierModel;
-	// OpenRouter/fal.ai don't support background mode (no retrieve endpoint)
 	const isOpenRouterCompatible = isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl);
 	const supportsBackground = modelConfig.supportsBackground !== false && !isOpenRouterCompatible;
 	const useBackground = supportsBackground ? (options.background ?? isLongRunningModel) : false;
@@ -276,13 +277,11 @@ export async function runOracle(
 				: DEFAULT_TIMEOUT_NON_PRO_MS / 1000
 			: options.timeoutSeconds;
 	const timeoutMs = timeoutSeconds * 1000;
-	// Track the concrete model id we dispatch to (especially for Gemini preview aliases)
 	const effectiveModelId =
 		options.effectiveModelId ??
 		(options.model.startsWith("gemini")
 			? resolveGeminiModelId(options.model)
 			: (modelConfig.apiModel ?? modelConfig.model));
-	// OpenRouter/fal.ai don't support the store parameter (handled via isOpenRouterCompatible)
 	const requestBody = buildRequestBody({
 		modelConfig,
 		systemPrompt,
@@ -387,7 +386,6 @@ export async function runOracle(
 		};
 	}
 
-	// When using fal.ai or OpenRouter, always use that endpoint (even for gemini/claude models)
 	const apiEndpoint =
 		isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl)
 			? baseUrl
@@ -396,7 +394,6 @@ export async function runOracle(
 				: modelConfig.model.startsWith("claude")
 					? (process.env.ANTHROPIC_BASE_URL ?? baseUrl)
 					: baseUrl;
-	// When using OpenRouter/fal.ai, use model ID as-is; otherwise resolve for native APIs
 	const useOpenRouterEndpoint = isOpenRouterBaseUrl(baseUrl) || isFalAiBaseUrl(baseUrl);
 	const resolvedModelId = useOpenRouterEndpoint
 		? effectiveModelId
@@ -415,7 +412,7 @@ export async function runOracle(
 		});
 	logVerbose("Dispatching request to API...");
 	if (options.verbose) {
-		log(""); // ensure verbose section is separated from Answer stream
+		log("");
 	}
 	const stopOscProgress = startOscProgress({
 		label: useBackground ? "Waiting for API (background)" : "Waiting for API",
@@ -424,156 +421,164 @@ export async function runOracle(
 		write: sinkWrite,
 	});
 
-	const runStart = now();
-	let response: OracleResponse | null = null;
-	let elapsedMs = 0;
-	let sawTextDelta = false;
-	// Buffer streamed text so we can re-render markdown once the stream ends (TTY + non-plain mode).
-	const streamedChunks: string[] = [];
-	let answerHeaderPrinted = false;
-	const allowAnswerHeader = options.suppressAnswerHeader !== true;
-	const timeoutExceeded = (): boolean => now() - runStart >= timeoutMs;
-	const throwIfTimedOut = () => {
-		if (timeoutExceeded()) {
-			throw new OracleTransportError(
-				"client-timeout",
-				`Timed out waiting for API response after ${formatElapsed(timeoutMs)}.`,
-			);
-		}
-	};
-	const ensureAnswerHeader = () => {
-		if (options.silent || answerHeaderPrinted) return;
-		// Always add a separating newline for readability; optionally include the label depending on caller needs.
-		log("");
-		if (allowAnswerHeader) {
-			log(chalk.bold("Answer:"));
-		}
-		answerHeaderPrinted = true;
-	};
+  const runStart = now();
+  let response: OracleResponse | null = null;
+  let elapsedMs = 0;
+  let sawTextDelta = false;
+  let answerHeaderPrinted = false;
+  const allowAnswerHeader = options.suppressAnswerHeader !== true;
+  const timeoutExceeded = (): boolean => now() - runStart >= timeoutMs;
+  const throwIfTimedOut = () => {
+    if (timeoutExceeded()) {
+      throw new OracleTransportError(
+        'client-timeout',
+        `Timed out waiting for API response after ${formatElapsed(timeoutMs)}.`,
+      );
+    }
+  };
+  const ensureAnswerHeader = () => {
+    if (options.silent || answerHeaderPrinted) return;
+    log('');
+    if (allowAnswerHeader) {
+      log(chalk.bold('Answer:'));
+    }
+    answerHeaderPrinted = true;
+  };
 
-	try {
-		if (useBackground) {
-			response = await executeBackgroundResponse({
-				client: clientInstance,
-				requestBody,
-				log,
-				wait,
-				heartbeatIntervalMs: options.heartbeatIntervalMs,
-				now,
-				maxWaitMs: timeoutMs,
-			});
-			elapsedMs = now() - runStart;
-		} else {
-			let stream: ResponseStreamLike;
-			try {
-				stream = await clientInstance.responses.stream(requestBody);
-			} catch (streamInitError) {
-				const transportError = toTransportError(streamInitError, requestBody.model);
-				log(chalk.yellow(describeTransportError(transportError, timeoutMs)));
-				throw transportError;
-			}
-			let heartbeatActive = false;
-			let stopHeartbeat: (() => void) | null = null;
-			const stopHeartbeatNow = () => {
-				if (!heartbeatActive) {
-					return;
-				}
-				heartbeatActive = false;
-				stopHeartbeat?.();
-				stopHeartbeat = null;
-			};
-			if (options.heartbeatIntervalMs && options.heartbeatIntervalMs > 0) {
-				heartbeatActive = true;
-				stopHeartbeat = startHeartbeat({
-					intervalMs: options.heartbeatIntervalMs,
-					log: (message) => log(message),
-					isActive: () => heartbeatActive,
-					makeMessage: (elapsedMs) => {
-						const elapsedText = formatElapsed(elapsedMs);
-						const remainingMs = Math.max(timeoutMs - elapsedMs, 0);
-						const remainingLabel =
-							remainingMs >= 60_000
-								? `${Math.ceil(remainingMs / 60_000)} min`
-								: `${Math.max(1, Math.ceil(remainingMs / 1000))}s`;
-						return `API connection active — ${elapsedText} elapsed. Timeout in ~${remainingLabel} if no response.`;
-					},
-				});
-			}
-			try {
-				for await (const event of stream) {
-					throwIfTimedOut();
-					const isTextDelta = event.type === "chunk" || event.type === "response.output_text.delta";
-					if (isTextDelta) {
-						stopOscProgress();
-						stopHeartbeatNow();
-						sawTextDelta = true;
-						ensureAnswerHeader();
-						if (!options.silent && typeof event.delta === "string") {
-							// Always keep the log/bookkeeping sink up to date.
-							sinkWrite(event.delta);
-							if (renderPlain) {
-								// Plain mode: stream directly to stdout regardless of write sink.
-								stdoutWrite(event.delta);
-							} else if (isTty) {
-								// Buffer for end-of-stream markdown rendering on TTY.
-								streamedChunks.push(event.delta);
-							} else {
-								// Non-TTY streams should still surface output; fall back to raw stdout.
-								stdoutWrite(event.delta);
-							}
-						}
-					}
-				}
-				throwIfTimedOut();
-			} catch (streamError) {
-				// stream.abort() is not available on the interface
-				stopHeartbeatNow();
-				const transportError = toTransportError(streamError, requestBody.model);
-				log(chalk.yellow(describeTransportError(transportError, timeoutMs)));
-				throw transportError;
-			}
-			response = await stream.finalResponse();
-			throwIfTimedOut();
-			stopHeartbeatNow();
-			elapsedMs = now() - runStart;
-		}
-	} finally {
-		stopOscProgress();
-	}
+  try {
+    if (useBackground) {
+      response = await executeBackgroundResponse({
+        client: clientInstance,
+        requestBody,
+        log,
+        wait,
+        heartbeatIntervalMs: options.heartbeatIntervalMs,
+        now,
+        maxWaitMs: timeoutMs,
+      });
+      elapsedMs = now() - runStart;
+    } else {
+      let stream: ResponseStreamLike;
+      try {
+        stream = await clientInstance.responses.stream(requestBody);
+      } catch (streamInitError) {
+        const transportError = toTransportError(streamInitError, requestBody.model);
+        log(chalk.yellow(describeTransportError(transportError, timeoutMs)));
+        throw transportError;
+      }
+      let heartbeatActive = false;
+      let stopHeartbeat: (() => void) | null = null;
+      const stopHeartbeatNow = () => {
+        if (!heartbeatActive) {
+          return;
+        }
+        heartbeatActive = false;
+        stopHeartbeat?.();
+        stopHeartbeat = null;
+      };
+        if (options.heartbeatIntervalMs && options.heartbeatIntervalMs > 0) {
+          heartbeatActive = true;
+          stopHeartbeat = startHeartbeat({
+            intervalMs: options.heartbeatIntervalMs,
+            log: (message) => log(message),
+            isActive: () => heartbeatActive,
+            makeMessage: (elapsedMs) => {
+              const elapsedText = formatElapsed(elapsedMs);
+              const remainingMs = Math.max(timeoutMs - elapsedMs, 0);
+              const remainingLabel =
+                remainingMs >= 60_000
+                  ? `${Math.ceil(remainingMs / 60_000)} min`
+                  : `${Math.max(1, Math.ceil(remainingMs / 1000))}s`;
+              return `API connection active — ${elapsedText} elapsed. Timeout in ~${remainingLabel} if no response.`;
+            },
+          });
+        }
+      let markdownStreamer: MarkdownStreamer | null = null;
+      const flushMarkdownStreamer = () => {
+        if (!markdownStreamer) return;
+        const rendered = markdownStreamer.finish();
+        markdownStreamer = null;
+        if (rendered) {
+          stdoutWrite(rendered);
+        }
+      };
+      try {
+        markdownStreamer =
+          isTty && !renderPlain
+            ? createMarkdownStreamer({
+                render: renderMarkdownAnsi,
+                spacing: 'single',
+                mode: 'hybrid',
+              })
+            : null;
+
+        for await (const event of stream) {
+          throwIfTimedOut();
+          const isTextDelta =
+            event.type === 'chunk' || event.type === 'response.output_text.delta';
+          if (!isTextDelta) continue;
+
+          stopOscProgress();
+          stopHeartbeatNow();
+          sawTextDelta = true;
+          ensureAnswerHeader();
+          if (options.silent || typeof event.delta !== 'string') continue;
+
+          sinkWrite(event.delta);
+          if (renderPlain) {
+            stdoutWrite(event.delta);
+            continue;
+          }
+
+          if (markdownStreamer) {
+            const rendered = markdownStreamer.push(event.delta);
+            if (rendered) {
+              stdoutWrite(rendered);
+            }
+            continue;
+          }
+
+          stdoutWrite(event.delta);
+        }
+
+        flushMarkdownStreamer();
+        throwIfTimedOut();
+      } catch (streamError) {
+        flushMarkdownStreamer();
+        stopHeartbeatNow();
+        const transportError = toTransportError(streamError, requestBody.model);
+        log(chalk.yellow(describeTransportError(transportError, timeoutMs)));
+        throw transportError;
+      }
+      response = await stream.finalResponse();
+      throwIfTimedOut();
+      stopHeartbeatNow();
+      elapsedMs = now() - runStart;
+    }
+  } finally {
+    stopOscProgress();
+  }
 
 	if (!response) {
 		throw new Error("API did not return a response.");
 	}
 
-	// We only add spacing when streamed text was printed.
-	if (sawTextDelta && !options.silent) {
-		const fullStreamedText = streamedChunks.join("");
-		const shouldRenderAfterStream = isTty && !renderPlain && fullStreamedText.length > 0;
-		if (shouldRenderAfterStream) {
-			const rendered = renderMarkdownAnsi(fullStreamedText);
-			stdoutWrite(rendered);
-			if (!rendered.endsWith("\n")) {
-				stdoutWrite("\n");
-			}
-			log("");
-		} else if (renderPlain) {
-			// Plain streaming already wrote chunks; ensure clean separation.
-			stdoutWrite("\n");
-		} else {
-			log("");
-		}
-	}
+  if (sawTextDelta && !options.silent) {
+    if (renderPlain) {
+      stdoutWrite('\n');
+    } else {
+      log('');
+    }
+  }
 
 	logVerbose(`Response status: ${response.status ?? "completed"}`);
 
 	if (response.status && response.status !== "completed") {
-		// API can reply `in_progress` even after the stream closes; give it a brief grace poll.
 		if (response.id && response.status === "in_progress") {
 			const polishingStart = now();
 			const pollIntervalMs = 2_000;
 			const maxWaitMs = 180_000;
 			log(chalk.dim("Response still in_progress; polling until completion..."));
-			// Short polling loop — we don't want to hang forever, just catch late finalization.
 			while (now() - polishingStart < maxWaitMs) {
 				throwIfTimedOut();
 				await wait(pollIntervalMs);
@@ -599,12 +604,10 @@ export async function runOracle(
 
 	const answerText = extractTextOutput(response);
 	if (!options.silent) {
-		// Flag flips to true when streaming events arrive.
 		if (sawTextDelta) {
-			// Already handled above (rendered or streamed); avoid double-printing.
+			// Already handled above
 		} else {
 			ensureAnswerHeader();
-			// Render markdown to ANSI in rich TTYs unless the caller opts out with --render-plain.
 			const printable = answerText
 				? renderPlain || !richTty
 					? answerText
@@ -622,62 +625,62 @@ export async function runOracle(
 		}
 	}
 
-	const usage = response.usage ?? {};
-	const inputTokens = usage.input_tokens ?? estimatedInputTokens;
-	const outputTokens = usage.output_tokens ?? 0;
-	const reasoningTokens = usage.reasoning_tokens ?? 0;
-	const totalTokens = usage.total_tokens ?? inputTokens + outputTokens + reasoningTokens;
-	const pricing = modelConfig.pricing ?? undefined;
-	const cost = pricing
-		? inputTokens * pricing.inputPerToken + outputTokens * pricing.outputPerToken
-		: undefined;
+  const usage = response.usage ?? {};
+  const inputTokens = usage.input_tokens ?? estimatedInputTokens;
+  const outputTokens = usage.output_tokens ?? 0;
+  const reasoningTokens = usage.reasoning_tokens ?? 0;
+  const totalTokens = usage.total_tokens ?? inputTokens + outputTokens + reasoningTokens;
+  const pricing = modelConfig.pricing ?? undefined;
+  const cost = pricing
+    ? estimateUsdCost({
+        usage: { inputTokens, outputTokens, reasoningTokens, totalTokens },
+        pricing: { inputUsdPerToken: pricing.inputPerToken, outputUsdPerToken: pricing.outputPerToken },
+      })?.totalUsd
+    : undefined;
 
-	const elapsedDisplay = formatElapsed(elapsedMs);
-	const statsParts: string[] = [];
-	const effortLabel = modelConfig.reasoning?.effort;
-	const modelLabel = effortLabel ? `${modelConfig.model}[${effortLabel}]` : modelConfig.model;
-	const sessionIdContainsModel =
-		typeof options.sessionId === "string" &&
-		options.sessionId.toLowerCase().includes(modelConfig.model.toLowerCase());
-	// Avoid duplicating the model name in the prefix (session id) and the stats bundle; keep a single source of truth.
-	if (!sessionIdContainsModel) {
-		statsParts.push(modelLabel);
-	}
-	if (cost != null) {
-		statsParts.push(formatUSD(cost));
-	} else {
-		statsParts.push("cost=N/A");
-	}
-	const tokensDisplay = [inputTokens, outputTokens, reasoningTokens, totalTokens]
-		.map((value, index) => formatTokenValue(value, usage, index))
-		.join("/");
-	const tokensLabel = options.verbose ? "tokens (input/output/reasoning/total)" : "tok(i/o/r/t)";
-	statsParts.push(`${tokensLabel}=${tokensDisplay}`);
-	if (options.verbose) {
-		// Only surface request-vs-response deltas when verbose is explicitly requested to keep default stats compact.
-		const actualInput = usage.input_tokens;
-		if (actualInput !== undefined) {
-			const delta = actualInput - estimatedInputTokens;
-			const deltaText =
-				delta === 0
-					? ""
-					: delta > 0
-						? ` (+${delta.toLocaleString()})`
-						: ` (${delta.toLocaleString()})`;
-			statsParts.push(
-				`est→actual=${estimatedInputTokens.toLocaleString()}→${actualInput.toLocaleString()}${deltaText}`,
-			);
-		}
-	}
-	if (!searchEnabled) {
-		statsParts.push("search=off");
-	}
-	if (files.length > 0) {
-		statsParts.push(`files=${files.length}`);
-	}
+  const effortLabel = modelConfig.reasoning?.effort;
+  const modelLabel = effortLabel ? `${modelConfig.model}[${effortLabel}]` : modelConfig.model;
+  const sessionIdContainsModel =
+    typeof options.sessionId === 'string' && options.sessionId.toLowerCase().includes(modelConfig.model.toLowerCase());
+  const tokensDisplay = [inputTokens, outputTokens, reasoningTokens, totalTokens]
+    .map((value, index) => formatTokenValue(value, usage, index))
+    .join('/');
+  const tokensPart = (() => {
+    const parts = tokensDisplay.split('/');
+    if (parts.length !== 4) return tokensDisplay;
+    return `↑${parts[0]} ↓${parts[1]} ↻${parts[2]} Δ${parts[3]}`;
+  })();
 
-	const sessionPrefix = options.sessionId ? `${options.sessionId} ` : "";
-	log(chalk.blue(`Finished ${sessionPrefix}in ${elapsedDisplay} (${statsParts.join(" | ")})`));
+  const modelPart = sessionIdContainsModel ? null : modelLabel;
+  const actualInput = usage.input_tokens;
+  const estActualPart = (() => {
+    if (!options.verbose) return null;
+    if (actualInput === undefined) return null;
+    const delta = actualInput - estimatedInputTokens;
+    const deltaText = delta === 0 ? '' : delta > 0 ? ` (+${delta.toLocaleString()})` : ` (${delta.toLocaleString()})`;
+    return `est→actual=${estimatedInputTokens.toLocaleString()}→${actualInput.toLocaleString()}${deltaText}`;
+  })();
+
+  const { line1, line2 } = formatFinishLine({
+    elapsedMs,
+    model: modelPart,
+    costUsd: cost ?? null,
+    tokensPart,
+    summaryExtraParts: options.sessionId ? [`sid=${options.sessionId}`] : null,
+    detailParts: [
+      estActualPart,
+      !searchEnabled ? 'search=off' : null,
+      files.length > 0 ? `files=${files.length}` : null,
+    ],
+  });
+
+  if (!options.silent) {
+    log('');
+  }
+  log(chalk.blue(line1));
+  if (line2) {
+    log(dim(line2));
+  }
 
 	return {
 		mode: "live",

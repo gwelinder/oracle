@@ -1,29 +1,11 @@
 import type CDP from 'chrome-remote-interface';
 import type Protocol from 'devtools-protocol';
 import type { BrowserRuntimeMetadata } from '../sessionStore.js';
+import type { ThinkingTimeLevel } from '../oracle/types.js';
 
 export type ChromeClient = Awaited<ReturnType<typeof CDP>>;
 export type CookieParam = Protocol.Network.CookieParam;
-
-export interface ChromeCookiesSecureModule {
-  getCookiesPromised: (
-    url: string,
-    format: 'puppeteer' | 'object',
-    profile?: string
-  ) => Promise<PuppeteerCookie[] | Record<string, unknown>>;
-}
-
-export interface PuppeteerCookie {
-  name: string;
-  value: string;
-  domain?: string;
-  path?: string;
-  expires?: number;
-  // biome-ignore lint/style/useNamingConvention: matches Puppeteer cookie shape
-  Secure?: boolean;
-  // biome-ignore lint/style/useNamingConvention: matches Puppeteer cookie shape
-  HttpOnly?: boolean;
-}
+export type BrowserModelStrategy = 'select' | 'current' | 'ignore';
 
 export type BrowserLogger = ((message: string) => void) & {
   verbose?: boolean;
@@ -47,18 +29,22 @@ export interface BrowserAutomationConfig {
   inputTimeoutMs?: number;
   cookieSync?: boolean;
   cookieNames?: string[] | null;
+  cookieSyncWaitMs?: number;
   inlineCookies?: CookieParam[] | null;
   inlineCookiesSource?: string | null;
   headless?: boolean;
   keepBrowser?: boolean;
   hideWindow?: boolean;
   desiredModel?: string | null;
+  modelStrategy?: BrowserModelStrategy;
   debug?: boolean;
   allowCookieErrors?: boolean;
   remoteChrome?: { host: string; port: number } | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
-  extendedThinking?: boolean;
+  manualLoginCookieSync?: boolean;
+  /** Thinking time intensity level for Thinking/Pro models: light, standard, extended, heavy */
+  thinkingTime?: ThinkingTimeLevel;
 }
 
 export interface BrowserRunOptions {
@@ -94,15 +80,21 @@ export interface BrowserRunResult {
 }
 
 export type ResolvedBrowserConfig = Required<
-  Omit<BrowserAutomationConfig, 'chromeProfile' | 'chromePath' | 'chromeCookiePath' | 'desiredModel' | 'remoteChrome'>
+  Omit<
+    BrowserAutomationConfig,
+    'chromeProfile' | 'chromePath' | 'chromeCookiePath' | 'desiredModel' | 'remoteChrome' | 'thinkingTime' | 'modelStrategy'
+  >
 > & {
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
   desiredModel?: string | null;
+  modelStrategy?: BrowserModelStrategy;
+  thinkingTime?: ThinkingTimeLevel;
   debugPort?: number | null;
   inlineCookiesSource?: string | null;
   remoteChrome?: { host: string; port: number } | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
+  manualLoginCookieSync?: boolean;
 };

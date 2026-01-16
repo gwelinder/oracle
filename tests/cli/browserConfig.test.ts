@@ -21,6 +21,14 @@ describe('buildBrowserConfig', () => {
     });
   });
 
+  test('sets model strategy when provided', async () => {
+    const config = await buildBrowserConfig({
+      model: 'gpt-5.2-pro',
+      browserModelStrategy: 'current',
+    });
+    expect(config.modelStrategy).toBe('current');
+  });
+
   test('honors overrides and converts durations + booleans', async () => {
     const config = await buildBrowserConfig({
       model: 'gpt-5.1',
@@ -30,6 +38,7 @@ describe('buildBrowserConfig', () => {
       browserUrl: 'https://chat.example.com',
       browserTimeout: '120s',
       browserInputTimeout: '5s',
+      browserCookieWait: '4s',
       browserNoCookieSync: true,
       browserHeadless: true,
       browserHideWindow: true,
@@ -44,6 +53,7 @@ describe('buildBrowserConfig', () => {
       url: 'https://chat.example.com/',
       timeoutMs: 120_000,
       inputTimeoutMs: 5_000,
+      cookieSyncWaitMs: 4_000,
       cookieSync: false,
       headless: undefined,
       hideWindow: true,
@@ -117,6 +127,16 @@ describe('buildBrowserConfig', () => {
         chatgptUrl: 'https://chatgpt.com/?temporary-chat=true',
       }),
     ).rejects.toThrow(/Temporary Chat/i);
+  });
+
+  test('allows temporary chat URLs when model strategy keeps current selection', async () => {
+    const config = await buildBrowserConfig({
+      model: 'gpt-5.2-pro',
+      chatgptUrl: 'https://chatgpt.com/?temporary-chat=true',
+      browserModelStrategy: 'current',
+    });
+    expect(config.url).toBe('https://chatgpt.com/?temporary-chat=true');
+    expect(config.modelStrategy).toBe('current');
   });
 
   test('allows temporary chat URLs when not targeting Pro', async () => {

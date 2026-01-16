@@ -11,13 +11,14 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-Oracle bundles your prompt and files so another AI can answer with real context. It speaks GPT-5.1 Pro (default alias to GPT-5.2 Pro on the API), GPT-5.1 Codex (API-only), GPT-5.1, GPT-5.2, Gemini 3 Pro, Claude Sonnet 4.5, Claude Opus 4.1, and more—and it can ask one or multiple models in a single run. Browser automation is available; API remains the most reliable path, and `--copy` is an easy manual fallback.
+Oracle bundles your prompt and files so another AI can answer with real context. It speaks GPT-5.1 Pro (default alias to GPT-5.2 Pro on the API), GPT-5.1 Codex (API-only), GPT-5.1, GPT-5.2, Gemini 3 Pro, Claude Sonnet 4.5, Claude Opus 4.1, and more—and it can ask one or multiple models in a single run. Browser automation is available; use `--browser-model-strategy current` to keep the active ChatGPT model (or `ignore` to skip the picker). API remains the most reliable path, and `--copy` is an easy manual fallback.
 
 ## Quick start
 
 Install globally: `npm install -g @steipete/oracle`
+Homebrew: `brew install steipete/tap/oracle`
 
-Use `npx -y @steipete/oracle …` (not `pnpx`)—pnpx's sandboxed cache can’t load the sqlite bindings and will throw missing `node_sqlite3.node` errors.
+Requires Node 22+. Or use `npx -y @steipete/oracle …` (or pnpx).
 
 ```bash
 # Copy the bundle and paste into ChatGPT
@@ -64,6 +65,12 @@ Engine auto-picks API when `OPENAI_API_KEY` is set, otherwise browser; browser i
   ```
 - Tip: set `browser.chatgptUrl` in config (or `--chatgpt-url`) to a dedicated ChatGPT project folder so browser runs don’t clutter your main history.
 
+**Codex skill**
+- Copy the bundled skill from this repo to your Codex skills folder:
+  - `mkdir -p ~/.codex/skills`
+  - `cp -R skills/oracle ~/.codex/skills/oracle`
+- Then reference it in your `AGENTS.md`/`CLAUDE.md` so Codex loads it.
+
 **MCP**
 - Run the stdio server via `oracle-mcp`.
 - Configure clients via [steipete/mcporter](https://github.com/steipete/mcporter) or `.mcp.json`; see [docs/mcp.md](docs/mcp.md) for connection examples.
@@ -104,6 +111,9 @@ npx -y @steipete/oracle oracle-mcp
 | `--models <list>` | Comma-separated API models (mix built-ins and OpenRouter ids) for multi-model runs. |
 | `--base-url <url>` | Point API runs at LiteLLM/Azure/OpenRouter/etc. |
 | `--chatgpt-url <url>` | Target a ChatGPT workspace/folder (browser). |
+| `--browser-model-strategy <select\|current\|ignore>` | Control ChatGPT model selection in browser mode (current keeps the active model; ignore skips the picker). |
+| `--browser-manual-login` | Skip cookie copy; reuse a persistent automation profile and wait for manual ChatGPT login. |
+| `--browser-thinking-time <light\|standard\|extended\|heavy>` | Set ChatGPT thinking-time intensity (browser; Thinking/Pro models only). |
 | `--browser-port <port>` | Pin the Chrome DevTools port (WSL/Windows firewall helper). |
 | `--browser-inline-cookies[(-file)] <payload|path>` | Supply cookies without Chrome/Keychain (browser). |
 | `--browser-timeout`, `--browser-input-timeout` | Control overall/browser input timeouts (supports h/m/s/ms). |
@@ -139,7 +149,7 @@ Advanced flags
 
 | Area | Flags |
 | --- | --- |
-| Browser | `--browser-timeout`, `--browser-input-timeout`, `--browser-inline-cookies[(-file)]`, `--browser-attachments`, `--browser-inline-files`, `--browser-bundle-files`, `--browser-keep-browser`, `--browser-headless`, `--browser-hide-window`, `--browser-no-cookie-sync`, `--browser-allow-cookie-errors`, `--browser-chrome-path`, `--browser-cookie-path`, `--chatgpt-url` |
+| Browser | `--browser-manual-login`, `--browser-thinking-time`, `--browser-timeout`, `--browser-input-timeout`, `--browser-cookie-wait`, `--browser-inline-cookies[(-file)]`, `--browser-attachments`, `--browser-inline-files`, `--browser-bundle-files`, `--browser-keep-browser`, `--browser-headless`, `--browser-hide-window`, `--browser-no-cookie-sync`, `--browser-allow-cookie-errors`, `--browser-chrome-path`, `--browser-cookie-path`, `--chatgpt-url` |
 | Azure/OpenAI | `--azure-endpoint`, `--azure-deployment`, `--azure-api-version`, `--base-url` |
 
 Remote browser example
@@ -161,6 +171,7 @@ oracle status --clear --hours 168
 ```
 
 ## More docs
+- Bridge (Windows host → Linux client): [docs/bridge.md](docs/bridge.md)
 - Browser mode & forks: [docs/browser-mode.md](docs/browser-mode.md) (includes `oracle serve` remote service), [docs/chromium-forks.md](docs/chromium-forks.md), [docs/linux.md](docs/linux.md)
 - MCP: [docs/mcp.md](docs/mcp.md)
 - OpenAI/Azure/OpenRouter endpoints: [docs/openai-endpoints.md](docs/openai-endpoints.md), [docs/openrouter.md](docs/openrouter.md)

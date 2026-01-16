@@ -1,5 +1,8 @@
+import type { BrowserModelStrategy } from './types.js';
+
 export const CHATGPT_URL = 'https://chatgpt.com/';
 export const DEFAULT_MODEL_TARGET = 'GPT-5.2 Pro';
+export const DEFAULT_MODEL_STRATEGY: BrowserModelStrategy = 'select';
 export const COOKIE_URLS = ['https://chatgpt.com', 'https://chat.openai.com', 'https://atlas.openai.com'];
 
 export const INPUT_SELECTORS = [
@@ -25,7 +28,10 @@ export const ANSWER_SELECTORS = [
   '[data-turn="assistant"]',
 ];
 
-export const CONVERSATION_TURN_SELECTOR = 'article[data-testid^="conversation-turn"]';
+export const CONVERSATION_TURN_SELECTOR =
+  'article[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"], ' +
+  'article[data-message-author-role], div[data-message-author-role], section[data-message-author-role], ' +
+  'article[data-turn], div[data-turn], section[data-turn]';
 export const ASSISTANT_ROLE_SELECTOR = '[data-message-author-role="assistant"], [data-turn="assistant"]';
 export const CLOUDFLARE_SCRIPT_SELECTOR = 'script[src*="/challenge-platform/"]';
 export const CLOUDFLARE_TITLE = 'just a moment';

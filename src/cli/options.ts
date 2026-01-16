@@ -1,6 +1,8 @@
-import { InvalidArgumentError, type Command } from "commander";
-import type { ModelName, PreviewMode } from "../oracle.js";
-import { DEFAULT_MODEL, MODEL_CONFIGS } from "../oracle.js";
+import { InvalidArgumentError, type Command } from 'commander';
+import path from 'node:path';
+import fg from 'fast-glob';
+import type { ModelName, PreviewMode } from '../oracle.js';
+import { DEFAULT_MODEL, MODEL_CONFIGS } from '../oracle.js';
 
 export function collectPaths(
 	value: string | string[] | undefined,
@@ -33,6 +35,37 @@ export function mergePathLikeOptions(
 	const withFilesAlias = collectPaths(filesAlias, withInclude);
 	const withPathAlias = collectPaths(pathAlias, withFilesAlias);
 	return collectPaths(pathsAlias, withPathAlias);
+}
+
+export function dedupePathInputs(
+  inputs: string[],
+  { cwd = process.cwd() }: { cwd?: string } = {},
+): { deduped: string[]; duplicates: string[] } {
+  const deduped: string[] = [];
+  const duplicates: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of inputs ?? []) {
+    const raw = entry?.trim();
+    if (!raw) continue;
+
+    let key = raw;
+    if (!raw.startsWith('!') && !fg.isDynamicPattern(raw)) {
+      const absolute = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+      key = `path:${path.normalize(absolute)}`;
+    } else {
+      key = `pattern:${raw}`;
+    }
+
+    if (seen.has(key)) {
+      duplicates.push(raw);
+      continue;
+    }
+    seen.add(key);
+    deduped.push(raw);
+  }
+
+  return { deduped, duplicates };
 }
 
 export function collectModelList(value: string, previous: string[] = []): string[] {
@@ -114,138 +147,62 @@ export function parseSearchOption(value: string): boolean {
 	if (["off", "false", "0", "no"].includes(normalized)) {
 		return false;
 	}
-	throw new InvalidArgumentError('Search mode must be "on" or "off".');
+	throw new InvalidArgumentError("Value must be on/off, true/false, or yes/no.");
 }
 
-export function normalizeModelOption(value: string | undefined): string {
-	return (value ?? "").trim();
-}
-
-export function normalizeBaseUrl(value: string | undefined): string | undefined {
-	const trimmed = value?.trim();
-	return trimmed?.length ? trimmed : undefined;
-}
-
-export function parseTimeoutOption(value: string | undefined): number | "auto" | undefined {
-	if (value == null) return undefined;
+export function parseTimeoutOption(value: string | undefined): number | undefined {
+	if (value == null) {
+		return undefined;
+	}
 	const normalized = value.trim().toLowerCase();
-	if (normalized === "auto") return "auto";
-	const parsed = Number.parseFloat(normalized);
-	if (Number.isNaN(parsed) || parsed <= 0) {
-		throw new InvalidArgumentError('Timeout must be a positive number of seconds or "auto".');
+	if (normalized.length === 0) {
+		return undefined;
 	}
-	return parsed;
+	// Check for time suffixes (s, m, h)
+	const match = normalized.match(/^(\d+(?:\.\d+)?)\s*(s|m|h)?$/i);
+	if (!match) {
+		throw new InvalidArgumentError("Timeout must be a number with optional suffix (s, m, h).");
+	}
+	const num = Number.parseFloat(match[1]);
+	const unit = match[2]?.toLowerCase() ?? "s";
+	switch (unit) {
+		case "h":
+			return num * 60 * 60 * 1000;
+		case "m":
+			return num * 60 * 1000;
+		case "s":
+		default:
+			return num * 1000;
+	}
 }
 
-export function resolveApiModel(modelValue: string): ModelName {
-	const normalized = normalizeModelOption(modelValue).toLowerCase();
-	// Pass through full OpenRouter model IDs (containing provider prefix like "google/", "openai/", etc.)
-	if (normalized.includes("/")) {
-		return normalized as ModelName;
-	}
-	if (normalized in MODEL_CONFIGS) {
-		return normalized as ModelName;
-	}
-	if (normalized.includes("grok")) {
-		return "grok-4.1";
-	}
-	if (normalized.includes("claude") && normalized.includes("sonnet")) {
-		return "claude-4.5-sonnet";
-	}
-	if (normalized.includes("claude") && normalized.includes("opus")) {
-		return "claude-4.1-opus";
-	}
-	if (normalized === "claude" || normalized === "sonnet" || /(^|\b)sonnet(\b|$)/.test(normalized)) {
-		return "claude-4.5-sonnet";
-	}
-	if (normalized === "opus" || normalized === "claude-4.1") {
-		return "claude-4.1-opus";
-	}
-	if (normalized.includes("5.0") || normalized === "gpt-5-pro" || normalized === "gpt-5") {
-		return "gpt-5-pro";
-	}
-	if (normalized.includes("5-pro") && !normalized.includes("5.1")) {
-		return "gpt-5-pro";
-	}
-	if (normalized.includes("5.2") && normalized.includes("pro")) {
-		return "gpt-5.2-pro";
-	}
-	if (normalized.includes("5.1") && normalized.includes("pro")) {
-		return "gpt-5.1-pro";
-	}
-	if (normalized.includes("codex")) {
-		if (normalized.includes("max")) {
-			throw new InvalidArgumentError(
-				"gpt-5.1-codex-max is not available yet. OpenAI has not released the API.",
-			);
-		}
-		return "gpt-5.1-codex";
-	}
-	if (normalized.includes("gemini")) {
-		return "gemini-3-pro";
-	}
-	if (normalized.includes("pro")) {
-		return "gpt-5.2-pro";
-	}
-	// Passthrough for custom/OpenRouter model IDs.
-	return normalized as ModelName;
-}
-
-export function inferModelFromLabel(modelValue: string): ModelName {
-	const normalized = normalizeModelOption(modelValue).toLowerCase();
-	if (!normalized) {
+export function normalizeModelOption(model: string | undefined): ModelName {
+	if (!model) {
 		return DEFAULT_MODEL;
 	}
-	if (normalized in MODEL_CONFIGS) {
-		return normalized as ModelName;
+	return model as ModelName;
+}
+
+export function normalizeBaseUrl(baseUrl: string | undefined): string | undefined {
+	if (!baseUrl) {
+		return undefined;
 	}
-	if (normalized.includes("grok")) {
-		return "grok-4.1";
+	return baseUrl.replace(/\/+$/, "");
+}
+
+export function resolveApiModel(
+	model: ModelName,
+	config: (typeof MODEL_CONFIGS)[keyof typeof MODEL_CONFIGS],
+): string {
+	return config?.apiModel ?? model;
+}
+
+export function inferModelFromLabel(label: string): ModelName | undefined {
+	const lower = label.toLowerCase();
+	for (const [key] of Object.entries(MODEL_CONFIGS)) {
+		if (lower.includes(key)) {
+			return key as ModelName;
+		}
 	}
-	if (normalized.includes("claude") && normalized.includes("sonnet")) {
-		return "claude-4.5-sonnet";
-	}
-	if (normalized.includes("claude") && normalized.includes("opus")) {
-		return "claude-4.1-opus";
-	}
-	if (normalized.includes("codex")) {
-		return "gpt-5.1-codex";
-	}
-	if (normalized.includes("gemini")) {
-		return "gemini-3-pro";
-	}
-	if (normalized.includes("classic")) {
-		return "gpt-5-pro";
-	}
-	if ((normalized.includes("5.2") || normalized.includes("5_2")) && normalized.includes("pro")) {
-		return "gpt-5.2-pro";
-	}
-	if (normalized.includes("5.0") || normalized.includes("5-pro")) {
-		return "gpt-5-pro";
-	}
-	if (
-		normalized.includes("gpt-5") &&
-		normalized.includes("pro") &&
-		!normalized.includes("5.1") &&
-		!normalized.includes("5.2")
-	) {
-		return "gpt-5-pro";
-	}
-	if ((normalized.includes("5.1") || normalized.includes("5_1")) && normalized.includes("pro")) {
-		return "gpt-5.1-pro";
-	}
-	if (normalized.includes("pro")) {
-		return "gpt-5.2-pro";
-	}
-	if (normalized.includes("5.1") || normalized.includes("5_1")) {
-		return "gpt-5.1";
-	}
-	if (
-		normalized.includes("instant") ||
-		normalized.includes("thinking") ||
-		normalized.includes("fast")
-	) {
-		return "gpt-5.1";
-	}
-	return "gpt-5.1";
+	return undefined;
 }

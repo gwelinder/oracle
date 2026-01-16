@@ -2,6 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import JSON5 from 'json5';
 import { getOracleHomeDir } from './oracleHome.js';
+import type { BrowserModelStrategy } from './browser/types.js';
+import type { ThinkingTimeLevel } from './oracle/types.js';
 
 export type EnginePreference = 'api' | 'browser';
 
@@ -20,15 +22,37 @@ export interface BrowserConfigDefaults {
   timeoutMs?: number;
   debugPort?: number | null;
   inputTimeoutMs?: number;
+  cookieSyncWaitMs?: number;
   headless?: boolean;
   hideWindow?: boolean;
   keepBrowser?: boolean;
+  modelStrategy?: BrowserModelStrategy;
+  /** Thinking time intensity (ChatGPT Thinking/Pro models): 'light', 'standard', 'extended', 'heavy' */
+  thinkingTime?: ThinkingTimeLevel;
+  /** Skip cookie sync and reuse a persistent automation profile (waits for manual ChatGPT login). */
+  manualLogin?: boolean;
+  /** Manual-login profile directory override (also available via ORACLE_BROWSER_PROFILE_DIR). */
+  manualLoginProfileDir?: string | null;
+  /** Delegate browser automation to a remote `oracle serve` instance (host:port). */
+  remoteHost?: string | null;
+  /** Access token clients must provide to the remote `oracle serve` instance. */
+  remoteToken?: string | null;
+  /** Optional metadata for the SSH reverse-tunnel that makes remoteHost reachable. */
+  remoteViaSshReverseTunnel?: RemoteViaSshReverseTunnelConfig | null;
 }
 
 export interface AzureConfig {
   endpoint?: string;
   deployment?: string;
   apiVersion?: string;
+}
+
+export interface RemoteViaSshReverseTunnelConfig {
+  ssh?: string;
+  remotePort?: number;
+  localPort?: number;
+  identity?: string;
+  extraArgs?: string;
 }
 
 export interface RemoteServiceConfig {

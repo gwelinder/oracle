@@ -1,6 +1,7 @@
-import type { ModelConfig, ModelName, KnownModelName, TokenizerFn, ProModelName } from "./types.js";
-import { MODEL_CONFIGS, PRO_MODELS } from "./config.js";
-import { countTokens as countTokensGpt5Pro } from "gpt-tokenizer/model/gpt-5-pro";
+import type { ModelConfig, ModelName, KnownModelName, TokenizerFn, ProModelName } from './types.js';
+import { MODEL_CONFIGS, PRO_MODELS } from './config.js';
+import { countTokens as countTokensGpt5Pro } from 'gpt-tokenizer/model/gpt-5-pro';
+import { pricingFromUsdPerMillion } from 'tokentally';
 
 const OPENROUTER_DEFAULT_BASE = "https://openrouter.ai/api/v1";
 const OPENROUTER_MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models";
@@ -49,7 +50,6 @@ export function defaultOpenRouterBaseUrl(): string {
 export function normalizeOpenRouterBaseUrl(baseUrl: string): string {
 	try {
 		const url = new URL(baseUrl);
-		// If user passed the responses endpoint, trim it so the client does not double-append.
 		if (url.pathname.endsWith("/responses")) {
 			url.pathname = url.pathname.replace(/\/responses\/?$/, "");
 		}
@@ -131,12 +131,11 @@ export async function resolveModelConfig(
 		return known;
 	}
 
-	// Try to enrich from OpenRouter catalog when available.
 	if (openRouterActive && options.openRouterApiKey) {
 		try {
 			const catalog = await fetchOpenRouterCatalog(options.openRouterApiKey, fetcher);
 			const targetId = mapToOpenRouterId(
-				typeof model === "string" ? model : String(model),
+				typeof model === 'string' ? model : String(model),
 				catalog,
 				known?.provider,
 			);
@@ -151,20 +150,25 @@ export async function resolveModelConfig(
 					}),
 					apiModel: targetId,
 					openRouterId: targetId,
-					provider: known?.provider ?? "other",
+					provider: known?.provider ?? 'other',
 					inputLimit: info.context_length ?? known?.inputLimit ?? 200_000,
 					pricing:
 						info.pricing && info.pricing.prompt != null && info.pricing.completion != null
-							? {
-									inputPerToken: info.pricing.prompt / 1_000_000,
-									outputPerToken: info.pricing.completion / 1_000_000,
-								}
-							: (known?.pricing ?? null),
+							? (() => {
+									const pricing = pricingFromUsdPerMillion({
+										inputUsdPerMillion: info.pricing.prompt,
+										outputUsdPerMillion: info.pricing.completion,
+									});
+									return {
+										inputPerToken: pricing.inputUsdPerToken,
+										outputPerToken: pricing.outputUsdPerToken,
+									};
+								})()
+							: known?.pricing ?? null,
 					supportsBackground: known?.supportsBackground ?? true,
 					supportsSearch: known?.supportsSearch ?? true,
 				};
 			}
-			// No metadata hit; fall through to synthesized config.
 			return {
 				...(known ?? {
 					model,
@@ -174,7 +178,7 @@ export async function resolveModelConfig(
 				}),
 				apiModel: targetId,
 				openRouterId: targetId,
-				provider: known?.provider ?? "other",
+				provider: known?.provider ?? 'other',
 				supportsBackground: known?.supportsBackground ?? true,
 				supportsSearch: known?.supportsSearch ?? true,
 				pricing: known?.pricing ?? null,
@@ -184,7 +188,6 @@ export async function resolveModelConfig(
 		}
 	}
 
-	// Synthesized generic config for custom endpoints or failed catalog fetch.
 	return {
 		...(known ?? {
 			model,
@@ -200,11 +203,9 @@ export async function resolveModelConfig(
 }
 
 export function isProModel(model: ModelName): boolean {
-	// Check known models first
 	if (isKnownModel(model) && PRO_MODELS.has(model as KnownModelName & ProModelName)) {
 		return true;
 	}
-	// Also check OpenRouter-style model ids (e.g., openai/gpt-5-pro, google/gemini-3-pro-preview)
 	const lowerModel = model.toLowerCase();
 	return (
 		lowerModel.includes("gpt-5-pro") ||
@@ -214,7 +215,6 @@ export function isProModel(model: ModelName): boolean {
 		lowerModel.includes("claude-opus-4") ||
 		lowerModel.includes("claude-4.5-sonnet") ||
 		lowerModel.includes("claude-sonnet-4") ||
-		// Gemini pro models can also take a long time (especially with large context)
 		lowerModel.includes("gemini-3-pro") ||
 		lowerModel.includes("gemini-2.5-pro") ||
 		lowerModel.includes("gemini-2-pro") ||

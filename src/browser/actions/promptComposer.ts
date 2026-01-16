@@ -5,6 +5,8 @@ import {
   PROMPT_FALLBACK_SELECTOR,
   SEND_BUTTON_SELECTORS,
   CONVERSATION_TURN_SELECTOR,
+  STOP_BUTTON_SELECTOR,
+  ASSISTANT_ROLE_SELECTOR,
 } from '../constants.js';
 import { delay } from '../utils.js';
 import { logDomFailure } from '../domDebug.js';
@@ -20,13 +22,19 @@ const ENTER_KEY_EVENT = {
 const ENTER_KEY_TEXT = '\r';
 
 export async function submitPrompt(
-  deps: { runtime: ChromeClient['Runtime']; input: ChromeClient['Input']; attachmentNames?: string[] },
+  deps: {
+    runtime: ChromeClient['Runtime'];
+    input: ChromeClient['Input'];
+    attachmentNames?: string[];
+    baselineTurns?: number | null;
+    inputTimeoutMs?: number | null;
+  },
   prompt: string,
   logger: BrowserLogger,
-) {
+) : Promise<number | null> {
   const { runtime, input } = deps;
 
-  await waitForDomReady(runtime, logger);
+  await waitForDomReady(runtime, logger, deps.inputTimeoutMs ?? undefined);
   const encodedPrompt = JSON.stringify(prompt);
   const focusResult = await runtime.evaluate({
     expression: `(() => {
@@ -36,6 +44,7 @@ export async function submitPrompt(
         if (!node) {
           return false;
         }
+        // Learned: React/ProseMirror require a real click + focus + selection for inserts to stick.
         dispatchClickSequence(node);
         if (typeof node.focus === 'function') {
           node.focus();
@@ -94,6 +103,7 @@ export async function submitPrompt(
   const editorTextTrimmed = editorTextRaw?.trim?.() ?? '';
   const fallbackValueTrimmed = fallbackValueRaw?.trim?.() ?? '';
   if (!editorTextTrimmed && !fallbackValueTrimmed) {
+    // Learned: occasionally Input.insertText doesn't land in the editor; force textContent/value + input events.
     await runtime.evaluate({
       expression: `(() => {
         const fallback = document.querySelector(${fallbackSelectorLiteral});
@@ -128,6 +138,7 @@ export async function submitPrompt(
   const observedFallback = postVerification.result?.value?.fallbackValue ?? '';
   const observedLength = Math.max(observedEditor.length, observedFallback.length);
   if (promptLength >= 50_000 && observedLength > 0 && observedLength < promptLength - 2_000) {
+    // Learned: very large prompts can truncate silently; fail fast so we can fall back to file uploads.
     await logDomFailure(runtime, logger, 'prompt-too-large');
     throw new BrowserAutomationError('Prompt appears truncated in the composer (likely too large).', {
       stage: 'submit-prompt',
@@ -154,7 +165,9 @@ export async function submitPrompt(
     logger('Clicked send button');
   }
 
-  await verifyPromptCommitted(runtime, prompt, 30_000, logger);
+  const commitTimeoutMs = Math.max(60_000, deps.inputTimeoutMs ?? 0);
+  // Learned: the send button can succeed but the turn doesn't appear immediately; verify commit via turns/stop button.
+  return await verifyPromptCommitted(runtime, prompt, commitTimeoutMs, logger, deps.baselineTurns ?? undefined);
 }
 
 export async function clearPromptComposer(Runtime: ChromeClient['Runtime'], logger: BrowserLogger) {
@@ -187,8 +200,8 @@ export async function clearPromptComposer(Runtime: ChromeClient['Runtime'], logg
   await delay(250);
 }
 
-async function waitForDomReady(Runtime: ChromeClient['Runtime'], logger?: BrowserLogger) {
-  const deadline = Date.now() + 10_000;
+async function waitForDomReady(Runtime: ChromeClient['Runtime'], logger?: BrowserLogger, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { result } = await Runtime.evaluate({
       expression: `(() => {
@@ -205,7 +218,7 @@ async function waitForDomReady(Runtime: ChromeClient['Runtime'], logger?: Browse
     }
     await delay(150);
   }
-  logger?.('Page did not reach ready/composer state within 10s; continuing cautiously.');
+  logger?.(`Page did not reach ready/composer state within ${timeoutMs}ms; continuing cautiously.`);
 }
 
 function buildAttachmentReadyExpression(attachmentNames: string[]): string {
@@ -270,6 +283,7 @@ async function attemptSendButton(
       dataDisabled === 'true' ||
       style.pointerEvents === 'none' ||
       style.display === 'none';
+    // Learned: some send buttons render but are inert; only click when truly enabled.
     if (disabled) return 'disabled';
     // Use unified pointer/mouse sequence to satisfy React handlers.
     dispatchClickSequence(button);
@@ -306,12 +320,20 @@ async function verifyPromptCommitted(
   prompt: string,
   timeoutMs: number,
   logger?: BrowserLogger,
-) {
+  baselineTurns?: number,
+): Promise<number | null> {
   const deadline = Date.now() + timeoutMs;
   const encodedPrompt = JSON.stringify(prompt.trim());
   const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
   const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
-	const script = `(() => {
+  const stopSelectorLiteral = JSON.stringify(STOP_BUTTON_SELECTOR);
+  const assistantSelectorLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
+  const baselineLiteral =
+    typeof baselineTurns === 'number' && Number.isFinite(baselineTurns) && baselineTurns >= 0
+      ? Math.floor(baselineTurns)
+      : -1;
+  // Learned: ChatGPT can echo/format text; normalize markdown and use prefix matches to detect the sent prompt.
+  const script = `(() => {
 	    const editor = document.querySelector(${primarySelectorLiteral});
 	    const fallback = document.querySelector(${fallbackSelectorLiteral});
 	    const normalize = (value) => {
@@ -333,11 +355,35 @@ async function verifyPromptCommitted(
 	      normalizedPromptPrefix.length > 30 &&
 	      normalizedTurns.some((text) => text.includes(normalizedPromptPrefix));
 	    const lastTurn = normalizedTurns[normalizedTurns.length - 1] ?? '';
+	    const lastMatched =
+	      normalizedPrompt.length > 0 &&
+	      (lastTurn.includes(normalizedPrompt) ||
+	        (normalizedPromptPrefix.length > 30 && lastTurn.includes(normalizedPromptPrefix)));
+	    const baseline = ${baselineLiteral};
+	    const hasNewTurn = baseline < 0 ? true : normalizedTurns.length > baseline;
+      const stopVisible = Boolean(document.querySelector(${stopSelectorLiteral}));
+      const assistantVisible = Boolean(
+        document.querySelector(${assistantSelectorLiteral}) ||
+        document.querySelector('[data-testid*="assistant"]'),
+      );
+      // Learned: composer clearing + stop button or assistant presence is a reliable fallback signal.
+      const editorValue = editor?.innerText ?? '';
+      const fallbackValue = fallback?.value ?? '';
+      const composerCleared = !(String(editorValue).trim() || String(fallbackValue).trim());
+      const href = typeof location === 'object' && location.href ? location.href : '';
+      const inConversation = /\\/c\\//.test(href);
 	    return {
       userMatched,
       prefixMatched,
-      fallbackValue: fallback?.value ?? '',
-      editorValue: editor?.innerText ?? '',
+      lastMatched,
+      hasNewTurn,
+      stopVisible,
+      assistantVisible,
+      composerCleared,
+      inConversation,
+      href,
+      fallbackValue,
+      editorValue,
       lastTurn,
       turnsCount: normalizedTurns.length,
     };
@@ -345,9 +391,27 @@ async function verifyPromptCommitted(
 
   while (Date.now() < deadline) {
     const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
-    const info = result.value as { userMatched: boolean; prefixMatched?: boolean };
-    if (info?.userMatched || info?.prefixMatched) {
-      return;
+    const info = result.value as {
+      userMatched?: boolean;
+      prefixMatched?: boolean;
+      lastMatched?: boolean;
+      hasNewTurn?: boolean;
+      stopVisible?: boolean;
+      assistantVisible?: boolean;
+      composerCleared?: boolean;
+      inConversation?: boolean;
+      turnsCount?: number;
+    };
+    const turnsCount = (result.value as { turnsCount?: number } | undefined)?.turnsCount;
+    if (info?.hasNewTurn && (info?.lastMatched || info?.userMatched || info?.prefixMatched)) {
+      return typeof turnsCount === 'number' && Number.isFinite(turnsCount) ? turnsCount : null;
+    }
+    const fallbackCommit =
+      info?.composerCleared &&
+      ((info?.stopVisible ?? false) ||
+        (info?.hasNewTurn && (info?.assistantVisible || info?.inConversation)));
+    if (fallbackCommit) {
+      return typeof turnsCount === 'number' && Number.isFinite(turnsCount) ? turnsCount : null;
     }
     await delay(100);
   }

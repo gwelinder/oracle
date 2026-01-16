@@ -1,4 +1,4 @@
-import type { ChromeClient, BrowserLogger } from '../types.js';
+import type { ChromeClient, BrowserLogger, BrowserModelStrategy } from '../types.js';
 import {
   MENU_CONTAINER_SELECTOR,
   MENU_ITEM_SELECTOR,
@@ -11,9 +11,10 @@ export async function ensureModelSelection(
   Runtime: ChromeClient['Runtime'],
   desiredModel: string,
   logger: BrowserLogger,
+  strategy: BrowserModelStrategy = 'select',
 ) {
   const outcome = await Runtime.evaluate({
-    expression: buildModelSelectionExpression(desiredModel),
+    expression: buildModelSelectionExpression(desiredModel, strategy),
     awaitPromise: true,
     returnByValue: true,
   });
@@ -56,11 +57,12 @@ export async function ensureModelSelection(
  * Builds the DOM expression that runs inside the ChatGPT tab to select a model.
  * The string is evaluated inside Chrome, so keep it self-contained and well-commented.
  */
-function buildModelSelectionExpression(targetModel: string): string {
+function buildModelSelectionExpression(targetModel: string, strategy: BrowserModelStrategy): string {
   const matchers = buildModelMatchersLiteral(targetModel);
   const labelLiteral = JSON.stringify(matchers.labelTokens);
   const idLiteral = JSON.stringify(matchers.testIdTokens);
   const primaryLabelLiteral = JSON.stringify(targetModel);
+  const strategyLiteral = JSON.stringify(strategy);
   const menuContainerLiteral = JSON.stringify(MENU_CONTAINER_SELECTOR);
   const menuItemLiteral = JSON.stringify(MENU_ITEM_SELECTOR);
   return `(() => {
@@ -70,6 +72,7 @@ function buildModelSelectionExpression(targetModel: string): string {
     const LABEL_TOKENS = ${labelLiteral};
     const TEST_IDS = ${idLiteral};
     const PRIMARY_LABEL = ${primaryLabelLiteral};
+    const MODEL_STRATEGY = ${strategyLiteral};
     const INITIAL_WAIT_MS = 150;
     const REOPEN_INTERVAL_MS = 400;
     const MAX_WAIT_MS = 20000;
@@ -106,6 +109,9 @@ function buildModelSelectionExpression(targetModel: string): string {
     }
 
     const getButtonLabel = () => (button.textContent ?? '').trim();
+    if (MODEL_STRATEGY === 'current') {
+      return { status: 'already-selected', label: getButtonLabel() };
+    }
     const buttonMatchesTarget = () => {
       const normalizedLabel = normalizeText(getButtonLabel());
       if (!normalizedLabel) return false;
@@ -117,6 +123,10 @@ function buildModelSelectionExpression(targetModel: string): string {
       if (wantsPro && !normalizedLabel.includes(' pro')) return false;
       if (wantsInstant && !normalizedLabel.includes('instant')) return false;
       if (wantsThinking && !normalizedLabel.includes('thinking')) return false;
+      // Also reject if button has variants we DON'T want
+      if (!wantsPro && normalizedLabel.includes(' pro')) return false;
+      if (!wantsInstant && normalizedLabel.includes('instant')) return false;
+      if (!wantsThinking && normalizedLabel.includes('thinking')) return false;
       return true;
     };
 
@@ -192,14 +202,21 @@ function buildModelSelectionExpression(targetModel: string): string {
             return 0;
           }
         }
-        const matches = TEST_IDS.filter((id) => id && normalizedTestId.includes(id));
-        if (matches.length > 0) {
-          // Prefer the most specific match (longest token) instead of treating any hit as equal.
-          // This prevents generic tokens (e.g. "pro") from outweighing version-specific targets.
-          const best = matches.reduce((acc, token) => (token.length > acc.length ? token : acc), '');
-          score += 200 + Math.min(900, best.length * 25);
-          if (best.startsWith('model-switcher-')) score += 120;
-          if (best.includes('gpt-')) score += 60;
+        // Exact testid matches take priority over substring matches
+        const exactMatch = TEST_IDS.find((id) => id && normalizedTestId === id);
+        if (exactMatch) {
+          score += 1500;
+          if (exactMatch.startsWith('model-switcher-')) score += 200;
+        } else {
+          const matches = TEST_IDS.filter((id) => id && normalizedTestId.includes(id));
+          if (matches.length > 0) {
+            // Prefer the most specific match (longest token) instead of treating any hit as equal.
+            // This prevents generic tokens (e.g. "pro") from outweighing version-specific targets.
+            const best = matches.reduce((acc, token) => (token.length > acc.length ? token : acc), '');
+            score += 200 + Math.min(900, best.length * 25);
+            if (best.startsWith('model-switcher-')) score += 120;
+            if (best.includes('gpt-')) score += 60;
+          }
         }
       }
       if (normalizedText && normalizedTarget) {
@@ -233,6 +250,22 @@ function buildModelSelectionExpression(targetModel: string): string {
           score -= 80;
         }
       } else if (normalizedText.includes(' pro')) {
+        score -= 40;
+      }
+      // Similarly for Thinking variant
+      if (wantsThinking) {
+        if (!normalizedText.includes('thinking') && !normalizedTestId.includes('thinking')) {
+          score -= 80;
+        }
+      } else if (normalizedText.includes('thinking') || normalizedTestId.includes('thinking')) {
+        score -= 40;
+      }
+      // Similarly for Instant variant
+      if (wantsInstant) {
+        if (!normalizedText.includes('instant') && !normalizedTestId.includes('instant')) {
+          score -= 80;
+        }
+      } else if (normalizedText.includes('instant') || normalizedTestId.includes('instant')) {
         score -= 40;
       }
       return Math.max(score, 0);
@@ -401,8 +434,24 @@ function buildModelMatchersLiteral(targetModel: string): { labelTokens: string[]
     push('gpt5-2', labelTokens);
     push('gpt52', labelTokens);
     push('chatgpt 5.2', labelTokens);
-    if (base.includes('thinking')) push('thinking', labelTokens);
-    if (base.includes('instant')) push('instant', labelTokens);
+    // Thinking variant: explicit testid for "Thinking" picker option
+    if (base.includes('thinking')) {
+      push('thinking', labelTokens);
+      testIdTokens.add('model-switcher-gpt-5-2-thinking');
+      testIdTokens.add('gpt-5-2-thinking');
+      testIdTokens.add('gpt-5.2-thinking');
+    }
+    // Instant variant: explicit testid for "Instant" picker option
+    if (base.includes('instant')) {
+      push('instant', labelTokens);
+      testIdTokens.add('model-switcher-gpt-5-2-instant');
+      testIdTokens.add('gpt-5-2-instant');
+      testIdTokens.add('gpt-5.2-instant');
+    }
+    // Base 5.2 testids (for "Auto" mode when no suffix specified)
+    if (!base.includes('thinking') && !base.includes('instant') && !base.includes('pro')) {
+      testIdTokens.add('model-switcher-gpt-5-2');
+    }
     testIdTokens.add('gpt-5-2');
     testIdTokens.add('gpt5-2');
     testIdTokens.add('gpt52');
@@ -461,5 +510,5 @@ function buildModelMatchersLiteral(targetModel: string): { labelTokens: string[]
 }
 
 export function buildModelSelectionExpressionForTest(targetModel: string): string {
-  return buildModelSelectionExpression(targetModel);
+  return buildModelSelectionExpression(targetModel, 'select');
 }

@@ -1,5 +1,7 @@
 import { normalizeChatgptUrl, CHATGPT_URL } from '../browserMode.js';
 import type { UserConfig } from '../config.js';
+import type { ThinkingTimeLevel } from '../oracle.js';
+import type { BrowserModelStrategy } from '../browser/types.js';
 
 export interface BrowserDefaultsOptions {
   chatgptUrl?: string;
@@ -9,10 +11,15 @@ export interface BrowserDefaultsOptions {
   browserCookiePath?: string;
   browserTimeout?: string | number;
   browserInputTimeout?: string | number;
+  browserCookieWait?: string | number;
   browserPort?: number;
   browserHeadless?: boolean;
   browserHideWindow?: boolean;
   browserKeepBrowser?: boolean;
+  browserModelStrategy?: BrowserModelStrategy;
+  browserThinkingTime?: ThinkingTimeLevel;
+  browserManualLogin?: boolean;
+  browserManualLoginProfileDir?: string | null;
 }
 
 type SourceGetter = (key: keyof BrowserDefaultsOptions) => string | undefined;
@@ -57,6 +64,9 @@ export function applyBrowserDefaultsFromConfig(
   if (isUnset('browserInputTimeout') && typeof browser.inputTimeoutMs === 'number') {
     options.browserInputTimeout = String(browser.inputTimeoutMs);
   }
+  if (isUnset('browserCookieWait') && typeof browser.cookieSyncWaitMs === 'number') {
+    options.browserCookieWait = String(browser.cookieSyncWaitMs);
+  }
   if (isUnset('browserHeadless') && browser.headless !== undefined) {
     options.browserHeadless = browser.headless;
   }
@@ -65,5 +75,17 @@ export function applyBrowserDefaultsFromConfig(
   }
   if (isUnset('browserKeepBrowser') && browser.keepBrowser !== undefined) {
     options.browserKeepBrowser = browser.keepBrowser;
+  }
+  if (isUnset('browserModelStrategy') && browser.modelStrategy !== undefined) {
+    options.browserModelStrategy = browser.modelStrategy;
+  }
+  if (isUnset('browserThinkingTime') && browser.thinkingTime !== undefined) {
+    options.browserThinkingTime = browser.thinkingTime;
+  }
+  if (isUnset('browserManualLogin') && browser.manualLogin !== undefined) {
+    options.browserManualLogin = browser.manualLogin;
+  }
+  if (isUnset('browserManualLoginProfileDir') && browser.manualLoginProfileDir !== undefined) {
+    options.browserManualLoginProfileDir = browser.manualLoginProfileDir;
   }
 }

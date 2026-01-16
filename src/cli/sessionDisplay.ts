@@ -7,7 +7,7 @@ import type {
 } from '../sessionStore.js';
 import type { OracleResponseMetadata } from '../oracle.js';
 import { renderMarkdownAnsi } from './markdownRenderer.js';
-import { formatElapsed, formatUSD } from '../oracle/format.js';
+import { formatFinishLine } from '../oracle/finishLine.js';
 import { sessionStore, wait } from '../sessionStore.js';
 import { formatTokenCount, formatTokenValue } from '../oracle/runUtils.js';
 import type { BrowserLogger } from '../browser/types.js';
@@ -107,6 +107,13 @@ export async function attachSession(sessionId: string, options?: AttachSessionOp
     process.exitCode = 1;
     return;
   }
+  if (metadata.mode === 'browser' && metadata.status === 'running' && !metadata.browser?.runtime) {
+    await wait(250);
+    const refreshed = await sessionStore.readSession(sessionId);
+    if (refreshed) {
+      metadata = refreshed;
+    }
+  }
   const normalizedModelFilter = options?.model?.trim().toLowerCase();
   if (normalizedModelFilter) {
     const availableModels =
@@ -124,11 +131,14 @@ export async function attachSession(sessionId: string, options?: AttachSessionOp
   const runtime = metadata.browser?.runtime;
   const controllerAlive = isProcessAlive(runtime?.controllerPid);
 
+  const hasChromeDisconnect = metadata.response?.incompleteReason === 'chrome-disconnected';
+  const statusAllowsReattach = metadata.status === 'running' || (metadata.status === 'error' && hasChromeDisconnect);
+  const hasFallbackSessionInfo = Boolean(runtime?.chromePort || runtime?.tabUrl || runtime?.conversationId);
   const canReattach =
-    metadata.status === 'running' &&
+    statusAllowsReattach &&
     metadata.mode === 'browser' &&
-    runtime?.chromePort &&
-    (metadata.response?.incompleteReason === 'chrome-disconnected' || (runtime.controllerPid && !controllerAlive));
+    hasFallbackSessionInfo &&
+    (hasChromeDisconnect || (runtime?.controllerPid && !controllerAlive));
 
   if (canReattach) {
     const portInfo = runtime?.chromePort ? `port ${runtime.chromePort}` : 'unknown port';
@@ -146,6 +156,7 @@ export async function attachSession(sessionId: string, options?: AttachSessionOp
           }) as unknown as BrowserLogger,
           { verbose: true },
         ),
+        { promptPreview: metadata.promptPreview },
       );
       const outputTokens = estimateTokenCount(result.answerMarkdown);
       const logWriter = sessionStore.createLogWriter(sessionId);
@@ -598,7 +609,6 @@ export function formatCompletionSummary(
   const modeLabel = metadata.mode === 'browser' ? `${metadata.model ?? 'n/a'}[browser]` : metadata.model ?? 'n/a';
   const usage = metadata.usage;
   const cost = resolveSessionCost(metadata);
-  const costPart = cost != null ? ` | ${formatUSD(cost)}` : '';
   const tokensDisplay = [
     usage.inputTokens ?? 0,
     usage.outputTokens ?? 0,
@@ -614,10 +624,22 @@ export function formatCompletionSummary(
       }, index),
     )
     .join('/');
+  const tokensPart = (() => {
+    const parts = tokensDisplay.split('/');
+    if (parts.length !== 4) return tokensDisplay;
+    return `↑${parts[0]} ↓${parts[1]} ↻${parts[2]} Δ${parts[3]}`;
+  })();
   const filesCount = metadata.options?.file?.length ?? 0;
-  const filesPart = filesCount > 0 ? ` | files=${filesCount}` : '';
-  const slugPart = options.includeSlug ? ` | slug=${metadata.id}` : '';
-  return `Finished in ${formatElapsed(metadata.elapsedMs)} (${modeLabel}${costPart} | tok(i/o/r/t)=${tokensDisplay}${filesPart}${slugPart})`;
+  const filesPart = filesCount > 0 ? `files=${filesCount}` : null;
+  const slugPart = options.includeSlug ? `slug=${metadata.id}` : null;
+  const { line1, line2 } = formatFinishLine({
+    elapsedMs: metadata.elapsedMs,
+    model: modeLabel,
+    costUsd: cost ?? null,
+    tokensPart,
+    detailParts: [filesPart, slugPart],
+  });
+  return line2 ? `${line1} | ${line2}` : line1;
 }
 
 async function readStoredPrompt(sessionId: string): Promise<string | null> {

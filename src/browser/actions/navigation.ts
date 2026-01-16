@@ -7,6 +7,48 @@ import {
 import { delay } from '../utils.js';
 import { logDomFailure } from '../domDebug.js';
 
+export function installJavaScriptDialogAutoDismissal(
+  Page: ChromeClient['Page'],
+  logger: BrowserLogger,
+): () => void {
+  type DialogEvent = { type?: string; message?: string };
+  const pageAny = Page as unknown as {
+    on?: (event: string, listener: (params: DialogEvent) => void) => void;
+    off?: (event: string, listener: (params: DialogEvent) => void) => void;
+    removeListener?: (event: string, listener: (params: DialogEvent) => void) => void;
+    handleJavaScriptDialog?: (params: { accept: boolean; promptText?: string }) => Promise<void>;
+  };
+
+  if (typeof pageAny.on !== 'function' || typeof pageAny.handleJavaScriptDialog !== 'function') {
+    return () => {};
+  }
+
+  const handler = async (params: DialogEvent) => {
+    const type = typeof params?.type === 'string' ? params.type : 'unknown';
+    const message = typeof params?.message === 'string' ? params.message : '';
+    logger(`[nav] dismissing JS dialog (${type})${message ? `: ${message.slice(0, 140)}` : ''}`);
+    try {
+      await pageAny.handleJavaScriptDialog?.({ accept: true, promptText: '' });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger(`[nav] failed to dismiss JS dialog: ${msg}`);
+    }
+  };
+
+  pageAny.on('javascriptDialogOpening', handler);
+  return () => {
+    try {
+      pageAny.off?.('javascriptDialogOpening', handler);
+    } catch {
+      try {
+        pageAny.removeListener?.('javascriptDialogOpening', handler);
+      } catch {
+        // ignore
+      }
+    }
+  };
+}
+
 export async function navigateToChatGPT(
   Page: ChromeClient['Page'],
   Runtime: ChromeClient['Runtime'],
@@ -16,6 +58,120 @@ export async function navigateToChatGPT(
   logger(`Navigating to ${url}`);
   await Page.navigate({ url });
   await waitForDocumentReady(Runtime, 45_000);
+}
+
+export interface PromptReadyNavigationOptions {
+  url: string;
+  fallbackUrl?: string;
+  timeoutMs: number;
+  fallbackTimeoutMs?: number;
+  headless: boolean;
+  logger: BrowserLogger;
+}
+
+export interface PromptReadyNavigationDeps {
+  navigateToChatGPT?: typeof navigateToChatGPT;
+  ensureNotBlocked?: typeof ensureNotBlocked;
+  ensurePromptReady?: typeof ensurePromptReady;
+}
+
+async function dismissBlockingUi(Runtime: ChromeClient['Runtime'], logger: BrowserLogger): Promise<boolean> {
+  const outcome = await Runtime.evaluate({
+    expression: `(() => {
+      const isVisible = (el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        const style = window.getComputedStyle(el);
+        if (!style) return false;
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        return true;
+      };
+      const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+      const labelFor = (el) => normalize(el?.textContent || el?.getAttribute?.('aria-label') || el?.getAttribute?.('title'));
+      const buttonCandidates = (root) =>
+        Array.from(root.querySelectorAll('button,[role="button"],a')).filter((el) => isVisible(el));
+
+      const roots = [
+        ...Array.from(document.querySelectorAll('[role="dialog"],dialog')),
+        document.body,
+      ].filter(Boolean);
+      for (const root of roots) {
+        const buttons = buttonCandidates(root);
+        const close = buttons.find((el) => labelFor(el).includes('close'));
+        if (close) {
+          (close).click();
+          return { dismissed: true, action: 'close' };
+        }
+        const okLike = buttons.find((el) => {
+          const label = labelFor(el);
+          return (
+            label === 'ok' ||
+            label === 'got it' ||
+            label === 'dismiss' ||
+            label === 'continue' ||
+            label === 'back' ||
+            label.includes('back to chatgpt') ||
+            label.includes('go to chatgpt') ||
+            label.includes('return') ||
+            label.includes('take me')
+          );
+        });
+        if (okLike) {
+          (okLike).click();
+          return { dismissed: true, action: 'confirm' };
+        }
+      }
+      return { dismissed: false };
+    })()`,
+    returnByValue: true,
+  }).catch(() => null);
+  const value = outcome?.result?.value as { dismissed?: boolean; action?: string } | undefined;
+  if (value?.dismissed) {
+    logger(`[nav] dismissed blocking UI (${value.action ?? 'unknown'})`);
+    return true;
+  }
+  return false;
+}
+
+export async function navigateToPromptReadyWithFallback(
+  Page: ChromeClient['Page'],
+  Runtime: ChromeClient['Runtime'],
+  options: PromptReadyNavigationOptions,
+  deps: PromptReadyNavigationDeps = {},
+): Promise<{ usedFallback: boolean }> {
+  const {
+    url,
+    fallbackUrl,
+    timeoutMs,
+    fallbackTimeoutMs,
+    headless,
+    logger,
+  } = options;
+  const navigate = deps.navigateToChatGPT ?? navigateToChatGPT;
+  const ensureBlocked = deps.ensureNotBlocked ?? ensureNotBlocked;
+  const ensureReady = deps.ensurePromptReady ?? ensurePromptReady;
+
+  await navigate(Page, Runtime, url, logger);
+  await ensureBlocked(Runtime, headless, logger);
+  await dismissBlockingUi(Runtime, logger).catch(() => false);
+  try {
+    await ensureReady(Runtime, timeoutMs, logger);
+    return { usedFallback: false };
+  } catch (error) {
+    if (!fallbackUrl || fallbackUrl === url) {
+      throw error;
+    }
+    const fallbackTimeout = fallbackTimeoutMs ?? Math.max(timeoutMs * 2, 120_000);
+    logger(
+      `Prompt not ready after ${Math.round(timeoutMs / 1000)}s on ${url}; retrying ${fallbackUrl} with ${Math.round(fallbackTimeout / 1000)}s timeout.`,
+    );
+    await navigate(Page, Runtime, fallbackUrl, logger);
+    await ensureBlocked(Runtime, headless, logger);
+    await dismissBlockingUi(Runtime, logger).catch(() => false);
+    await ensureReady(Runtime, fallbackTimeout, logger);
+    return { usedFallback: true };
+  }
 }
 
 export async function ensureNotBlocked(Runtime: ChromeClient['Runtime'], headless: boolean, logger: BrowserLogger) {
@@ -35,16 +191,46 @@ export async function ensureLoggedIn(
   logger: BrowserLogger,
   options: { appliedCookies?: number | null; remoteSession?: boolean } = {},
 ) {
+  // Learned: ChatGPT can render the UI (project view) while auth silently failed.
+  // A backend-api probe plus DOM login CTA check catches both cases.
   const outcome = await Runtime.evaluate({
     expression: buildLoginProbeExpression(LOGIN_CHECK_TIMEOUT_MS),
     awaitPromise: true,
     returnByValue: true,
   });
   const probe = normalizeLoginProbe(outcome.result?.value);
-  if (probe.ok && !probe.domLoginCta && !probe.onAuthPage) {
-    logger('Login check passed (no login button detected on page)');
+  if (probe.ok) {
+    logger(`Login check passed (status=${probe.status}, domLoginCta=${Boolean(probe.domLoginCta)})`);
     return;
   }
+
+  const accepted = await attemptWelcomeBackLogin(Runtime, logger);
+  if (accepted) {
+    // Learned: "Welcome back" account picker needs a click even when cookies are valid,
+    // and the redirect can lag, so re-probe before failing hard.
+    await delay(1500);
+    const retryOutcome = await Runtime.evaluate({
+      expression: buildLoginProbeExpression(LOGIN_CHECK_TIMEOUT_MS),
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const retryProbe = normalizeLoginProbe(retryOutcome.result?.value);
+    if (retryProbe.ok) {
+      logger('Login restored via Welcome back account picker');
+      return;
+    }
+    logger(
+      `Login retry after Welcome back failed (status=${retryProbe.status}, domLoginCta=${Boolean(
+        retryProbe.domLoginCta,
+      )})`,
+    );
+  }
+
+  logger(
+    `Login probe failed (status=${probe.status}, domLoginCta=${Boolean(probe.domLoginCta)}, onAuthPage=${Boolean(
+      probe.onAuthPage,
+    )}, url=${probe.pageUrl ?? 'n/a'}, error=${probe.error ?? 'none'})`,
+  );
 
   const domLabel = probe.domLoginCta ? ' Login button detected on page.' : '';
   const cookieHint = options.remoteSession
@@ -56,9 +242,101 @@ export async function ensureLoggedIn(
   throw new Error(`ChatGPT session not detected.${domLabel} ${cookieHint}`);
 }
 
+async function attemptWelcomeBackLogin(Runtime: ChromeClient['Runtime'], logger: BrowserLogger): Promise<boolean> {
+  const outcome = await Runtime.evaluate({
+    expression: `(() => {
+      // Learned: "Welcome back" shows as a modal with account chips; click the email chip.
+      const TIMEOUT_MS = 30000;
+      const getLabel = (node) =>
+        (node?.textContent || node?.getAttribute?.('aria-label') || '').trim();
+      const isAccount = (label) =>
+        Boolean(label) &&
+        label.includes('@') &&
+        !/log in|sign up|create account|another account/i.test(label);
+      const findAccount = () => {
+        const candidates = Array.from(document.querySelectorAll('[role="button"],button,a'));
+        return candidates.find((node) => isAccount(getLabel(node))) || null;
+      };
+      const clickAccount = () => {
+        const account = findAccount();
+        if (!account) return null;
+        try {
+          (account).click();
+        } catch (_error) {
+          return { clicked: false, reason: 'click-failed' };
+        }
+        return { clicked: true, label: getLabel(account) };
+      };
+      const immediate = clickAccount();
+      if (immediate) {
+        return immediate;
+      }
+      const root = document.documentElement || document.body;
+      if (!root) {
+        return { clicked: false, reason: 'no-root' };
+      }
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          observer.disconnect();
+          resolve({ clicked: false, reason: 'timeout' });
+        }, TIMEOUT_MS);
+        const observer = new MutationObserver(() => {
+          const result = clickAccount();
+          if (result) {
+            clearTimeout(timer);
+            observer.disconnect();
+            resolve(result);
+          }
+        });
+        observer.observe(root, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+        });
+      });
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (outcome.exceptionDetails) {
+    const details = outcome.exceptionDetails;
+    const description =
+      (details.exception && typeof details.exception.description === 'string' && details.exception.description) ||
+      details.text ||
+      'unknown error';
+    logger(`Welcome back auto-select probe failed: ${description}`);
+  }
+  const result = outcome.result?.value as { clicked?: boolean; reason?: string; label?: string } | undefined;
+  if (!result) {
+    logger('Welcome back auto-select probe returned no result.');
+    return false;
+  }
+  if (result?.clicked) {
+    logger(`Welcome back modal detected; selected account ${result.label ?? '(unknown)'}`);
+    return true;
+  }
+  if (result?.reason && result.reason !== 'timeout') {
+    logger(`Welcome back modal present but auto-select failed (${result.reason}).`);
+  }
+  if (result?.reason === 'timeout') {
+    logger('Welcome back modal not detected after login probe failure.');
+  }
+  return false;
+}
+
 export async function ensurePromptReady(Runtime: ChromeClient['Runtime'], timeoutMs: number, logger: BrowserLogger) {
   const ready = await waitForPrompt(Runtime, timeoutMs);
   if (!ready) {
+    const authUrl = await currentUrl(Runtime);
+    if (authUrl && isAuthLoginUrl(authUrl)) {
+      // Learned: auth.openai.com/login can appear after cookies are copied; allow manual login window.
+      logger('Auth login page detected; waiting for manual login to complete...');
+      const extended = Math.min(Math.max(timeoutMs, 60_000), 20 * 60_000);
+      const loggedIn = await waitForPrompt(Runtime, extended);
+      if (loggedIn) {
+        return;
+      }
+    }
     await logDomFailure(Runtime, logger, 'prompt-textarea');
     throw new Error('Prompt textarea did not appear before timeout');
   }
@@ -77,6 +355,26 @@ async function waitForDocumentReady(Runtime: ChromeClient['Runtime'], timeoutMs:
     await delay(100);
   }
   throw new Error('Page did not reach ready state in time');
+}
+
+async function currentUrl(Runtime: ChromeClient['Runtime']): Promise<string | null> {
+  const { result } = await Runtime.evaluate({
+    expression: 'typeof location === "object" && location.href ? location.href : null',
+    returnByValue: true,
+  });
+  return typeof result?.value === 'string' ? result.value : null;
+}
+
+function isAuthLoginUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes('auth.openai.com')) {
+      return true;
+    }
+    return /^\/log-?in/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 
 async function waitForPrompt(Runtime: ChromeClient['Runtime'], timeoutMs: number): Promise<boolean> {
@@ -130,7 +428,9 @@ type LoginProbeResult = {
 };
 
 function buildLoginProbeExpression(timeoutMs: number): string {
-  return `(() => {
+  return `(async () => {
+    // Learned: /backend-api/me is the most reliable "am I logged in" signal.
+    // Some UIs render without a session; use DOM + network for a robust answer.
     const timer = setTimeout(() => {}, ${timeoutMs});
     const pageUrl = typeof location === 'object' && location?.href ? location.href : null;
     const onAuthPage =
@@ -175,16 +475,40 @@ function buildLoginProbeExpression(timeoutMs: number): string {
       return false;
     };
 
+    let status = 0;
+    let error = null;
+    try {
+      if (typeof fetch === 'function') {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), ${timeoutMs});
+        try {
+          // Credentials included so we see a 200 only when cookies are valid.
+          const response = await fetch('/backend-api/me', {
+            cache: 'no-store',
+            credentials: 'include',
+            signal: controller.signal,
+          });
+          status = response.status || 0;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+    } catch (err) {
+      error = err ? String(err) : 'unknown';
+    }
+
     const domLoginCta = hasLoginCta();
+    const loginSignals = domLoginCta || onAuthPage;
     clearTimeout(timer);
     return {
-      ok: !domLoginCta && !onAuthPage,
-      status: 0,
+      ok: !loginSignals && (status === 0 || status === 200),
+      status,
       redirected: false,
       url: pageUrl,
       pageUrl,
       domLoginCta,
       onAuthPage,
+      error,
     };
   })()`;
 }
