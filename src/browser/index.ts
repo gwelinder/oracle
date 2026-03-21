@@ -491,7 +491,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
 
     const agentMode = config.agentMode ?? "current";
     if (agentMode !== "current") {
-      await raceWithDisconnect(
+      const agentResult = await raceWithDisconnect(
         withRetries(() => ensureAgentMode(Runtime, agentMode, logger), {
           retries: 2,
           delayMs: 300,
@@ -504,6 +504,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           },
         }),
       );
+      if (agentResult?.connectorDismissed) {
+        logger("Connector dialog dismissed; re-preparing composer");
+        await delay(1000);
+        await raceWithDisconnect(clearPromptComposer(Runtime, logger)).catch(() => undefined);
+      }
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       logger(`Prompt textarea ready (after Agent mode ${agentMode})`);
     }
@@ -1501,7 +1506,7 @@ async function runRemoteBrowserMode(
 
     const agentMode = config.agentMode ?? "current";
     if (agentMode !== "current") {
-      await withRetries(() => ensureAgentMode(Runtime, agentMode, logger), {
+      const agentResult = await withRetries(() => ensureAgentMode(Runtime, agentMode, logger), {
         retries: 2,
         delayMs: 300,
         onRetry: (attempt, error) => {
@@ -1512,6 +1517,11 @@ async function runRemoteBrowserMode(
           }
         },
       });
+      if (agentResult?.connectorDismissed) {
+        logger("Connector dialog dismissed; re-preparing composer");
+        await delay(1000);
+        await clearPromptComposer(Runtime, logger).catch(() => undefined);
+      }
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
       logger(`Prompt textarea ready (after Agent mode ${agentMode})`);
     }

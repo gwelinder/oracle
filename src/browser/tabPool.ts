@@ -13,7 +13,7 @@ import {
   readAssistantSnapshot,
   installJavaScriptDialogAutoDismissal,
 } from "./pageActions.js";
-import { submitPrompt } from "./actions/promptComposer.js";
+import { submitPrompt, clearPromptComposer } from "./actions/promptComposer.js";
 import { delay, estimateTokenCount, withRetries } from "./utils.js";
 import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR } from "./constants.js";
 import type { ProfileRunLock } from "./profileState.js";
@@ -186,13 +186,24 @@ async function runJobInTab(
 
       // Agent mode
       const agentMode = config.agentMode ?? "current";
+      let connectorDismissed = false;
       if (agentMode !== "current") {
-        await raceDisconnect(
+        const agentResult = await raceDisconnect(
           withRetries(() => ensureAgentMode(Runtime, agentMode, logger), {
             retries: 2,
             delayMs: 500,
           }),
         );
+        connectorDismissed = agentResult?.connectorDismissed ?? false;
+
+        if (connectorDismissed) {
+          // Connector dialog was dismissed — composer state may be disrupted.
+          // Wait for the dialog to fully close, clear any stale composer content,
+          // and re-verify prompt readiness before submitting.
+          parentLogger(`${prefix} Connector dialog dismissed; re-preparing composer`);
+          await delay(1000);
+          await raceDisconnect(clearPromptComposer(Runtime, logger)).catch(() => undefined);
+        }
         await raceDisconnect(
           ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger),
         );

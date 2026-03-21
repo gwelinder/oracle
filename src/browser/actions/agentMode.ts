@@ -19,14 +19,19 @@ type AgentModeOutcome =
  * - off: ensure agent mode is disabled
  * - current: no-op
  */
+export interface AgentModeResult {
+  /** Whether a connector dialog was dismissed (may need prompt re-preparation). */
+  connectorDismissed: boolean;
+}
+
 export async function ensureAgentMode(
   Runtime: ChromeClient["Runtime"],
   mode: BrowserAgentMode,
   logger: BrowserLogger,
-): Promise<void> {
+): Promise<AgentModeResult> {
   if (mode === "current") {
     logger("Agent mode: keeping current state");
-    return;
+    return { connectorDismissed: false };
   }
 
   const outcome = await Runtime.evaluate({
@@ -35,20 +40,63 @@ export async function ensureAgentMode(
     returnByValue: true,
   });
 
+  // Post-action: dismiss any connector dialog that may have appeared with a delay.
+  // The "Using agent mode with connectors" dialog can render after the expression returns.
+  // Returns true if a connector dialog was dismissed (caller should re-prepare the composer).
+  const dismissPostAction = async (): Promise<boolean> => {
+    let dismissed = false;
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setTimeout(r, 400));
+      const r = await Runtime.evaluate({
+        expression: `(() => {
+          ${buildClickDispatcher()}
+          const normalize = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+          const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(
+            (el) => el instanceof HTMLElement && el.getBoundingClientRect().width > 0
+          );
+          for (const d of dialogs) {
+            const text = normalize(d.textContent || '');
+            if (!text.includes('connector')) continue;
+            const buttons = Array.from(d.querySelectorAll('button'));
+            const turnOff = buttons.find((b) => normalize(b.textContent || '').includes('turn off') || normalize(b.textContent || '').includes('sluk') || normalize(b.textContent || '').includes('deaktiver'));
+            if (turnOff) { dispatchClickSequence(turnOff); return 'dismissed-turn-off'; }
+            const accept = buttons.find((b) => normalize(b.textContent || '').includes('i understand') || normalize(b.textContent || '').includes('ok'));
+            if (accept) { dispatchClickSequence(accept); return 'dismissed-accept'; }
+            const xBtn = d.querySelector('button:has(svg)');
+            if (xBtn && (xBtn.textContent || '').trim().length < 3) { dispatchClickSequence(xBtn); return 'dismissed-x'; }
+          }
+          return 'none';
+        })()`,
+        returnByValue: true,
+      }).catch(() => ({ result: { value: "error" } }));
+      const v = typeof r.result?.value === "string" ? r.result.value : "error";
+      if (v.startsWith("dismissed")) {
+        logger(`Connector dialog dismissed (${v})`);
+        dismissed = true;
+        break;
+      }
+    }
+    return dismissed;
+  };
+
   const result = outcome.result?.value as AgentModeOutcome | undefined;
   switch (result?.status) {
-    case "already-on":
+    case "already-on": {
       logger(`Agent mode: on${result.label ? ` (${result.label})` : ""}`);
-      return;
+      const connectorDismissed = await dismissPostAction();
+      return { connectorDismissed };
+    }
     case "already-off":
       logger(`Agent mode: off${result.label ? ` (${result.label})` : ""}`);
-      return;
-    case "switched-on":
+      return { connectorDismissed: false };
+    case "switched-on": {
       logger(`Agent mode: enabled${result.label ? ` (${result.label})` : ""}`);
-      return;
+      const connectorDismissed = await dismissPostAction();
+      return { connectorDismissed };
+    }
     case "switched-off":
       logger(`Agent mode: disabled${result.label ? ` (${result.label})` : ""}`);
-      return;
+      return { connectorDismissed: false };
     case "menu-not-found":
       await logDomFailure(Runtime, logger, "agent-mode-menu");
       throw new Error("Unable to open the ChatGPT tools menu to set Agent mode.");
@@ -196,29 +244,59 @@ function buildAgentModeExpression(mode: Exclude<BrowserAgentMode, "current">): s
     };
 
     const dismissConnectorPopups = () => {
-      // Dismiss any open Google Apps / connector / integration dialogs that may overlay the composer.
-      const dialogSelectors = [
-        '[role="dialog"]',
-        '[data-testid*="connector"]',
-        '[data-testid*="integration"]',
-        '[data-testid*="plugin"]',
-      ];
-      for (const selector of dialogSelectors) {
-        const dialogs = document.querySelectorAll(selector);
-        for (const dialog of dialogs) {
-          if (!(dialog instanceof HTMLElement)) continue;
-          if (!isVisible(dialog)) continue;
-          // Try to find and click a close/dismiss button inside the dialog
-          const closeBtn = dialog.querySelector('button[aria-label*="close"], button[aria-label*="Close"], button[aria-label*="dismiss"], button[aria-label*="cancel"]');
-          if (closeBtn instanceof HTMLElement) {
-            dispatchClickSequence(closeBtn);
+      // Dismiss any open connector/integration dialogs that overlay the composer.
+      // Priority targets:
+      // 1. "Using agent mode with connectors" dialog — click "Turn off connectors"
+      //    to prevent connectors from interfering with automation.
+      // 2. Generic integration/connector popups — close button or Escape.
+
+      const allDialogs = Array.from(document.querySelectorAll(
+        '[role="dialog"], [data-testid*="connector"], [data-testid*="integration"], [data-testid*="plugin"], [data-testid*="modal"]'
+      )).filter((el) => el instanceof HTMLElement && isVisible(el));
+
+      for (const dialog of allDialogs) {
+        const dialogText = normalize(dialog.textContent || '');
+
+        // "Using agent mode with connectors" dialog
+        if (dialogText.includes('agent mode') && dialogText.includes('connector')) {
+          // Prefer "Turn off connectors" to keep automation clean
+          const buttons = Array.from(dialog.querySelectorAll('button'));
+          const turnOff = buttons.find((b) => {
+            const label = normalize(b.textContent || '');
+            return label.includes('turn off') || label.includes('sluk') || label.includes('deaktiver') || label.includes('disable');
+          });
+          if (turnOff instanceof HTMLElement) {
+            dispatchClickSequence(turnOff);
             continue;
           }
-          // Press Escape as fallback
-          try {
-            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
-          } catch {}
+          // Fallback: "I understand" / close button / X
+          const accept = buttons.find((b) => {
+            const label = normalize(b.textContent || '');
+            return label.includes('i understand') || label.includes('forstår') || label.includes('ok') || label.includes('got it');
+          });
+          if (accept instanceof HTMLElement) {
+            dispatchClickSequence(accept);
+            continue;
+          }
         }
+
+        // Generic close: X button, close label, or Escape
+        const closeBtn = dialog.querySelector(
+          'button[aria-label*="close"], button[aria-label*="Close"], button[aria-label*="dismiss"], button[aria-label*="cancel"], button[aria-label*="Luk"]'
+        );
+        if (closeBtn instanceof HTMLElement) {
+          dispatchClickSequence(closeBtn);
+          continue;
+        }
+        // Try the X button (often the first/only button with just an SVG)
+        const xBtn = dialog.querySelector('button:has(svg)');
+        if (xBtn instanceof HTMLElement && (xBtn.textContent || '').trim().length < 3) {
+          dispatchClickSequence(xBtn);
+          continue;
+        }
+        try {
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+        } catch {}
       }
     };
 
@@ -347,10 +425,18 @@ function buildAgentModeExpression(mode: Exclude<BrowserAgentMode, "current">): s
       if (match) {
         if (TARGET_MODE === 'on') {
           if (match.selected || initialComposerState === true) {
+            // Even if already on, dismiss any lingering connector dialog
+            dismissConnectorPopups();
             return { status: 'already-on', label: match.label };
           }
           dispatchClickSequence(match.node);
           await wait(POST_CLICK_WAIT_MS);
+          // Agent mode toggle can trigger "Using agent mode with connectors" dialog —
+          // dismiss it immediately by clicking "Turn off connectors".
+          dismissConnectorPopups();
+          // Wait a bit more and dismiss again in case the dialog renders late
+          await wait(500);
+          dismissConnectorPopups();
           return { status: 'switched-on', label: match.label };
         }
 
