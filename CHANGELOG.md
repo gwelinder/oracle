@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Browser: add ChatGPT Agent mode controls for browser runs via `--browser-agent-mode <on|off|current>`, including config defaults (`browser.agentMode`) and DOM automation through the composer tools menu.
+- Browser: add parallel batch mode via `--batch <jobs.json> --parallel <N>` for running multiple agent jobs concurrently in separate Chrome tabs. Supports resume (skips completed outputs), per-job file attachments, `{slug}` output path templates, and fault-tolerant execution.
+
+### Fixed
+
+- Browser: auto-detect running Chrome DevTools port via process scan when `DevToolsActivePort` file is stale or missing, preventing `about:blank` tab accumulation on manual-login profiles.
+- Browser: expand agent-mode file-pointer responses (`{{file:...}}`) by extracting the full rendered content from the assistant turn DOM, so `--write-output` captures the actual report instead of a stub.
+
 ## 0.9.0 — 2026-03-08
 
 ### Changed

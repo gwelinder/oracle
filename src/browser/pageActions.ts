@@ -7,6 +7,7 @@ export {
   installJavaScriptDialogAutoDismissal,
 } from "./actions/navigation.js";
 export { ensureModelSelection } from "./actions/modelSelection.js";
+export { ensureAgentMode } from "./actions/agentMode.js";
 export { submitPrompt, clearPromptComposer } from "./actions/promptComposer.js";
 export {
   clearComposerAttachments,
@@ -18,6 +19,7 @@ export {
   waitForAssistantResponse,
   readAssistantSnapshot,
   captureAssistantMarkdown,
+  extractExpandedAssistantText,
   buildAssistantExtractorForTest,
   buildConversationDebugExpressionForTest,
   buildMarkdownFallbackExtractorForTest,

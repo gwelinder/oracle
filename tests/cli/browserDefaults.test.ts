@@ -91,6 +91,34 @@ describe("applyBrowserDefaultsFromConfig", () => {
     expect(options.browserThinkingTime).toBe("extended");
   });
 
+  test("applies agent mode when CLI flag is untouched", () => {
+    const options: BrowserDefaultsOptions = {};
+    const config: UserConfig = {
+      browser: {
+        agentMode: "on",
+      },
+    };
+
+    applyBrowserDefaultsFromConfig(options, config, (_key) => "default");
+
+    expect(options.browserAgentMode).toBe("on");
+  });
+
+  test("does not override agent mode when CLI provided a value", () => {
+    const options: BrowserDefaultsOptions = { browserAgentMode: "off" };
+    const config: UserConfig = {
+      browser: {
+        agentMode: "on",
+      },
+    };
+
+    const source = (key: keyof BrowserDefaultsOptions) =>
+      key === "browserAgentMode" ? "cli" : "default";
+    applyBrowserDefaultsFromConfig(options, config, source);
+
+    expect(options.browserAgentMode).toBe("off");
+  });
+
   test("does not override thinking time when CLI provided a value", () => {
     const options: BrowserDefaultsOptions = { browserThinkingTime: "light" };
     const config: UserConfig = {

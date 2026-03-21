@@ -139,6 +139,7 @@ interface CliOptions extends OptionValues {
   browserHideWindow?: boolean;
   browserKeepBrowser?: boolean;
   browserModelStrategy?: "select" | "current" | "ignore";
+  browserAgentMode?: "on" | "off" | "current";
   browserManualLogin?: boolean;
   browserManualLoginProfileDir?: string;
   browserThinkingTime?: "light" | "standard" | "extended" | "heavy";
@@ -157,6 +158,8 @@ interface CliOptions extends OptionValues {
   output?: string;
   aspect?: string;
   geminiShowThoughts?: boolean;
+  batch?: string;
+  parallel?: number;
   copyMarkdown?: boolean;
   copy?: boolean;
   verbose?: boolean;
@@ -586,6 +589,12 @@ program
   )
   .addOption(
     new Option(
+      "--browser-agent-mode <mode>",
+      "ChatGPT Agent mode preference: on enables it, off disables it, current keeps whatever the UI currently has.",
+    ).choices(["on", "off", "current"]),
+  )
+  .addOption(
+    new Option(
       "--browser-thinking-time <level>",
       "Thinking time intensity for Thinking/Pro models: light, standard, extended, heavy.",
     )
@@ -668,6 +677,20 @@ program
       "--gemini-show-thoughts",
       "Display Gemini thinking process (Gemini web/cookie mode only).",
     ).default(false),
+  )
+  .addOption(
+    new Option(
+      "--batch <manifest>",
+      "Run batch of agent jobs from a JSON manifest file. Each entry needs slug and prompt fields. Enables parallel browser tabs.",
+    ),
+  )
+  .addOption(
+    new Option(
+      "--parallel <count>",
+      "Number of concurrent browser tabs for --batch mode (default 4, max 8).",
+    )
+      .argParser(parseIntOption)
+      .default(4),
   )
   .option(
     "--retain-hours <hours>",
@@ -1574,14 +1597,14 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     return;
   }
 
-  if (!options.prompt) {
+  if (!options.prompt && !options.batch) {
     throw new Error("Prompt is required when starting a new session.");
   }
 
-  if (userConfig.promptSuffix) {
+  if (userConfig.promptSuffix && options.prompt) {
     options.prompt = `${options.prompt.trim()}\n${userConfig.promptSuffix}`;
   }
-  resolvedOptions.prompt = options.prompt;
+  resolvedOptions.prompt = options.prompt ?? "";
   if (options.followup) {
     assertFollowupSupported({
       engine,
@@ -1668,6 +1691,96 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     }
   }
   const remoteExecutionActive = Boolean(browserDeps);
+
+  // ---- Batch mode: run multiple agent jobs in parallel tabs ----
+  if (options.batch) {
+    if (sessionMode !== "browser") {
+      throw new Error("--batch requires --engine browser (agent mode runs use browser automation).");
+    }
+    if (!browserConfig) {
+      throw new Error("--batch requires browser configuration.");
+    }
+    if (!browserConfig.manualLogin) {
+      console.log(
+        chalk.yellow(
+          "Warning: --batch works best with --browser-manual-login to reuse an authenticated Chrome profile.",
+        ),
+      );
+    }
+
+    const { runBatch } = await import("../src/cli/batchRunner.js");
+    const { runBrowserMode } = await import("../src/browserMode.js");
+    const { resolveBrowserConfig } = await import("../src/browser/config.js");
+    const { maybeReuseRunningChromeForTest: maybeReuseRunningChrome } = await import(
+      "../src/browser/index.js"
+    );
+    const os = await import("node:os");
+    const fsMod = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+
+    const resolvedBrowserConfig = resolveBrowserConfig(browserConfig);
+    const manualProfileDir =
+      resolvedBrowserConfig.manualLoginProfileDir ??
+      pathMod.join(os.homedir(), ".oracle", "browser-profile");
+
+    // Ensure Chrome is running with the manual-login profile
+    const noopLogger: import("../src/browser/types.js").BrowserLogger = ((msg: string) => {
+      if (options.verbose) console.log(chalk.dim(msg));
+    }) as import("../src/browser/types.js").BrowserLogger;
+    noopLogger.verbose = Boolean(options.verbose);
+
+    const { launchChrome } = await import("../src/browser/chromeLifecycle.js");
+
+    let chromePort: number;
+    let chromeHost = "127.0.0.1";
+    let chromePid: number | undefined;
+
+    const existingChrome = await maybeReuseRunningChrome(manualProfileDir, noopLogger, {
+      waitForPortMs: resolvedBrowserConfig.reuseChromeWaitMs ?? 10_000,
+    });
+
+    if (existingChrome) {
+      chromePort = existingChrome.port;
+      chromePid = existingChrome.pid ?? undefined;
+      chromeHost = (existingChrome as unknown as { host?: string }).host ?? "127.0.0.1";
+      console.log(
+        chalk.dim(`Reusing Chrome (port ${chromePort}${chromePid ? `, pid ${chromePid}` : ""})`),
+      );
+    } else {
+      await fsMod.mkdir(manualProfileDir, { recursive: true });
+      const chrome = await launchChrome(resolvedBrowserConfig, manualProfileDir, noopLogger);
+      chromePort = chrome.port;
+      chromePid = chrome.pid ?? undefined;
+      chromeHost = (chrome as unknown as { host?: string }).host ?? "127.0.0.1";
+      console.log(chalk.dim(`Launched Chrome (port ${chromePort})`));
+
+      const { writeDevToolsActivePort, writeChromePid } = await import(
+        "../src/browser/profileState.js"
+      );
+      await writeDevToolsActivePort(manualProfileDir, chromePort);
+      if (chromePid) await writeChromePid(manualProfileDir, chromePid);
+    }
+
+    const parallel = Math.min(Math.max(1, options.parallel ?? 4), 8);
+    const writeOutputTemplate = options.writeOutput ?? options.writeOutputPath;
+
+    await runBatch({
+      manifestPath: options.batch,
+      parallel,
+      writeOutputTemplate,
+      browserConfig,
+      cwd: process.cwd(),
+      verbose: Boolean(options.verbose),
+      log: console.log,
+      chrome: {
+        port: chromePort,
+        host: chromeHost,
+        pid: chromePid,
+        userDataDir: manualProfileDir,
+      },
+    });
+    return;
+  }
 
   if (options.dryRun) {
     const baseRunOptions = buildRunOptions(resolvedOptions, {

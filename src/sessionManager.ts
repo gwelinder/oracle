@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import net from "node:net";
-import type { BrowserModelStrategy, CookieParam } from "./browser/types.js";
+import type { BrowserAgentMode, BrowserModelStrategy, CookieParam } from "./browser/types.js";
 import type {
   TransportFailureReason,
   AzureOptions,
@@ -49,6 +49,7 @@ export interface BrowserSessionConfig {
   hideWindow?: boolean;
   desiredModel?: string | null;
   modelStrategy?: BrowserModelStrategy;
+  agentMode?: BrowserAgentMode;
   debug?: boolean;
   allowCookieErrors?: boolean;
   remoteChrome?: { host: string; port: number } | null;

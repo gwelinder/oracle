@@ -28,9 +28,11 @@ import {
   ensurePromptReady,
   installJavaScriptDialogAutoDismissal,
   ensureModelSelection,
+  ensureAgentMode,
   clearPromptComposer,
   waitForAssistantResponse,
   captureAssistantMarkdown,
+  extractExpandedAssistantText,
   clearComposerAttachments,
   uploadAttachmentFile,
   waitForAttachmentCompletion,
@@ -50,6 +52,8 @@ import type { ProfileRunLock } from "./profileState.js";
 import {
   cleanupStaleProfileState,
   acquireProfileRunLock,
+  detectRunningChromeDebugPort,
+  isChromeUsingUserDataDir,
   readChromePid,
   readDevToolsPort,
   shouldCleanupManualLoginProfileState,
@@ -484,6 +488,26 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         }),
       );
     }
+
+    const agentMode = config.agentMode ?? "current";
+    if (agentMode !== "current") {
+      await raceWithDisconnect(
+        withRetries(() => ensureAgentMode(Runtime, agentMode, logger), {
+          retries: 2,
+          delayMs: 300,
+          onRetry: (attempt, error) => {
+            if (options.verbose) {
+              logger(
+                `[retry] Agent mode (${agentMode}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+              );
+            }
+          },
+        }),
+      );
+      await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      logger(`Prompt textarea ready (after Agent mode ${agentMode})`);
+    }
+
     const profileLockTimeoutMs = manualLogin ? (config.profileLockTimeoutMs ?? 0) : 0;
     let profileLock: ProfileRunLock | null = null;
     const acquireProfileLockIfNeeded = async () => {
@@ -810,6 +834,28 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       ),
     ).catch(() => null);
     answerMarkdown = copiedMarkdown ?? answerText;
+
+    // Agent-mode file-attachment enrichment: when the captured text is just a pointer to an
+    // attached file (e.g. "attached file: {{file:...}}"), ChatGPT renders the full file content
+    // inline inside the turn element.  Extract the full turn innerText in that case.
+    const looksLikeFilePointer =
+      answerText.trim().length < 300 &&
+      (/\{\{file[:\-]/.test(answerText) ||
+        /attached file/i.test(answerText) ||
+        /available in the attached/i.test(answerText));
+    if (looksLikeFilePointer) {
+      const expandedText = await extractExpandedAssistantText(
+        Runtime,
+        baselineTurns ?? undefined,
+      ).catch(() => null);
+      if (expandedText && expandedText.length > answerText.trim().length * 2) {
+        logger(
+          `Expanded agent-mode file response (${answerText.trim().length} → ${expandedText.length} chars)`,
+        );
+        answerText = expandedText;
+        answerMarkdown = expandedText;
+      }
+    }
 
     const promptEchoMatcher = buildPromptEchoMatcher(promptText);
     ({ answerText, answerMarkdown } = await maybeRecoverLongAssistantResponse({
@@ -1220,9 +1266,54 @@ async function _assertNavigatedToHttp(
 async function maybeReuseRunningChrome(
   userDataDir: string,
   logger: BrowserLogger,
-  options: { waitForPortMs?: number; probe?: typeof verifyDevToolsReachable } = {},
+  options: {
+    waitForPortMs?: number;
+    probe?: typeof verifyDevToolsReachable;
+    detectPort?: typeof detectRunningChromeDebugPort;
+    profileInUseProbe?: typeof isChromeUsingUserDataDir;
+  } = {},
 ): Promise<LaunchedChrome | null> {
   const waitForPortMs = Math.max(0, options.waitForPortMs ?? 0);
+  const probe = options.probe ?? verifyDevToolsReachable;
+  const detectPort = options.detectPort ?? detectRunningChromeDebugPort;
+  const profileInUseProbe = options.profileInUseProbe ?? isChromeUsingUserDataDir;
+  let detectedPid: number | undefined;
+
+  const adoptDetectedPort = async (
+    reason: string,
+    currentPort?: number,
+  ): Promise<number | null> => {
+    const detected = await detectPort(userDataDir).catch(() => null);
+    if (!detected?.port) {
+      return null;
+    }
+    if (
+      typeof currentPort === "number" &&
+      Number.isFinite(currentPort) &&
+      detected.port === currentPort
+    ) {
+      return null;
+    }
+
+    const reachable = await probe({ port: detected.port });
+    if (!reachable.ok) {
+      logger(
+        `Detected Chrome on DevTools port ${detected.port} (${reason}) but it is unreachable (${reachable.error}).`,
+      );
+      return null;
+    }
+
+    await writeDevToolsActivePort(userDataDir, detected.port).catch(() => undefined);
+    if (detected.pid) {
+      detectedPid = detected.pid;
+      await writeChromePid(userDataDir, detected.pid).catch(() => undefined);
+    }
+    logger(
+      `Detected running Chrome for ${userDataDir} on DevTools port ${detected.port} (${reason}); reusing.`,
+    );
+    return detected.port;
+  };
+
   let port = await readDevToolsPort(userDataDir);
   if (!port && waitForPortMs > 0) {
     const deadline = Date.now() + waitForPortMs;
@@ -1232,19 +1323,48 @@ async function maybeReuseRunningChrome(
       port = await readDevToolsPort(userDataDir);
     }
   }
-  if (!port) return null;
 
-  const probe = await (options.probe ?? verifyDevToolsReachable)({ port });
-  if (!probe.ok) {
-    logger(
-      `DevToolsActivePort found for ${userDataDir} but unreachable (${probe.error}); launching new Chrome.`,
-    );
-    // Safe cleanup: remove stale DevToolsActivePort; only remove lock files if this was an Oracle-owned pid that died.
-    await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: "if_oracle_pid_dead" });
+  if (!port) {
+    port = await adoptDetectedPort("scan", undefined);
+  }
+  if (!port) {
+    const inUse = await profileInUseProbe(userDataDir).catch(() => false);
+    if (inUse) {
+      throw new Error(
+        "Detected Chrome already running with the manual-login profile, but no reachable DevTools port was found. " +
+          "Close that Chrome (or kill stale profile processes) and retry.",
+      );
+    }
     return null;
   }
 
-  const pid = await readChromePid(userDataDir);
+  let reachable = await probe({ port });
+  if (!reachable.ok) {
+    const detected = await adoptDetectedPort("fallback-scan", port);
+    if (detected) {
+      port = detected;
+      reachable = { ok: true };
+    }
+  }
+
+  if (!reachable.ok) {
+    logger(
+      `DevToolsActivePort found for ${userDataDir} but unreachable (${reachable.error}); launching new Chrome.`,
+    );
+    // Safe cleanup: remove stale DevToolsActivePort; only remove lock files if this was an Oracle-owned pid that died.
+    await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: "if_oracle_pid_dead" });
+
+    const inUse = await profileInUseProbe(userDataDir).catch(() => false);
+    if (inUse) {
+      throw new Error(
+        "Detected Chrome using the manual-login profile, but the recorded DevTools port is unreachable. " +
+          "Close that Chrome (or clear stale profile state) and retry.",
+      );
+    }
+    return null;
+  }
+
+  const pid = detectedPid ?? (await readChromePid(userDataDir));
   logger(
     `Found running Chrome for ${userDataDir}; reusing (DevTools port ${port}${pid ? `, pid ${pid}` : ""})`,
   );
@@ -1377,6 +1497,23 @@ async function runRemoteBrowserMode(
           }
         },
       });
+    }
+
+    const agentMode = config.agentMode ?? "current";
+    if (agentMode !== "current") {
+      await withRetries(() => ensureAgentMode(Runtime, agentMode, logger), {
+        retries: 2,
+        delayMs: 300,
+        onRetry: (attempt, error) => {
+          if (options.verbose) {
+            logger(
+              `[retry] Agent mode (${agentMode}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+            );
+          }
+        },
+      });
+      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+      logger(`Prompt textarea ready (after Agent mode ${agentMode})`);
     }
 
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
@@ -1632,6 +1769,27 @@ async function runRemoteBrowserMode(
     ).catch(() => null);
 
     answerMarkdown = copiedMarkdown ?? answerText;
+
+    // Agent-mode file-attachment enrichment (remote path)
+    const looksLikeFilePointer =
+      answerText.trim().length < 300 &&
+      (/\{\{file[:\-]/.test(answerText) ||
+        /attached file/i.test(answerText) ||
+        /available in the attached/i.test(answerText));
+    if (looksLikeFilePointer) {
+      const expandedText = await extractExpandedAssistantText(
+        Runtime,
+        baselineTurns ?? undefined,
+      ).catch(() => null);
+      if (expandedText && expandedText.length > answerText.trim().length * 2) {
+        logger(
+          `Expanded agent-mode file response (${answerText.trim().length} → ${expandedText.length} chars)`,
+        );
+        answerText = expandedText;
+        answerMarkdown = expandedText;
+      }
+    }
+
     ({ answerText, answerMarkdown } = await maybeRecoverLongAssistantResponse({
       runtime: Runtime,
       baselineTurns,
@@ -1781,7 +1939,12 @@ export {
 export async function maybeReuseRunningChromeForTest(
   userDataDir: string,
   logger: BrowserLogger,
-  options: { waitForPortMs?: number; probe?: typeof verifyDevToolsReachable } = {},
+  options: {
+    waitForPortMs?: number;
+    probe?: typeof verifyDevToolsReachable;
+    detectPort?: typeof detectRunningChromeDebugPort;
+    profileInUseProbe?: typeof isChromeUsingUserDataDir;
+  } = {},
 ): Promise<LaunchedChrome | null> {
   return maybeReuseRunningChrome(userDataDir, logger, options);
 }

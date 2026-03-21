@@ -6,6 +6,7 @@ import type { ThinkingTimeLevel } from "../oracle/types.js";
 export type ChromeClient = Awaited<ReturnType<typeof CDP>>;
 export type CookieParam = Protocol.Network.CookieParam;
 export type BrowserModelStrategy = "select" | "current" | "ignore";
+export type BrowserAgentMode = "on" | "off" | "current";
 
 export type BrowserLogger = ((message: string) => void) & {
   verbose?: boolean;
@@ -51,6 +52,7 @@ export interface BrowserAutomationConfig {
   hideWindow?: boolean;
   desiredModel?: string | null;
   modelStrategy?: BrowserModelStrategy;
+  agentMode?: BrowserAgentMode;
   debug?: boolean;
   allowCookieErrors?: boolean;
   remoteChrome?: { host: string; port: number } | null;
@@ -103,6 +105,7 @@ export type ResolvedBrowserConfig = Required<
     | "remoteChrome"
     | "thinkingTime"
     | "modelStrategy"
+    | "agentMode"
   >
 > & {
   chromeProfile?: string | null;
@@ -110,6 +113,7 @@ export type ResolvedBrowserConfig = Required<
   chromeCookiePath?: string | null;
   desiredModel?: string | null;
   modelStrategy?: BrowserModelStrategy;
+  agentMode?: BrowserAgentMode;
   thinkingTime?: ThinkingTimeLevel;
   debugPort?: number | null;
   inlineCookiesSource?: string | null;

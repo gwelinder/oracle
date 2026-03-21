@@ -221,6 +221,48 @@ export async function captureAssistantMarkdown(
   return null;
 }
 
+/**
+ * Extract the full innerText of the last assistant turn, including any file-preview
+ * cards that live outside the .markdown container.  Used as a post-capture enrichment
+ * when the initial capture looks like a file-pointer stub.
+ */
+export async function extractExpandedAssistantText(
+  Runtime: ChromeClient["Runtime"],
+  minTurnIndex?: number,
+): Promise<string | null> {
+  const minTurnLiteral =
+    typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
+      ? Math.floor(minTurnIndex)
+      : -1;
+  const { result } = await Runtime.evaluate({
+    expression: `(() => {
+      const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
+      const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
+      const MIN_TURN_INDEX = ${minTurnLiteral};
+      const isAssistantTurn = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+        if (turnAttr === 'assistant') return true;
+        const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+        if (role === 'assistant') return true;
+        const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+        return testId.includes('assistant');
+      };
+      const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+      for (let i = turns.length - 1; i >= 0; i--) {
+        if (MIN_TURN_INDEX >= 0 && i < MIN_TURN_INDEX) break;
+        const turn = turns[i];
+        if (!isAssistantTurn(turn)) continue;
+        const text = (turn.innerText || '').trim();
+        if (text) return text;
+      }
+      return null;
+    })()`,
+    returnByValue: true,
+  });
+  return typeof result?.value === "string" ? result.value : null;
+}
+
 export function buildAssistantExtractorForTest(name: string): string {
   return buildAssistantExtractor(name);
 }
@@ -846,9 +888,25 @@ function buildAssistantExtractor(functionName: string): string {
       if (!contentRoot) {
         continue;
       }
-      const innerText = contentRoot?.innerText ?? '';
+      let innerText = contentRoot?.innerText ?? '';
       const textContent = contentRoot?.textContent ?? '';
-      const text = innerText.trim().length > 0 ? innerText : textContent;
+      let text = innerText.trim().length > 0 ? innerText : textContent;
+
+      // Agent mode file-attachment expansion: when the assistant response is just a file
+      // pointer (e.g. "attached file: {{file:...}}"), ChatGPT renders the full file content
+      // inline inside the turn but outside the .markdown container. Fall back to the full
+      // turn innerText to capture the expanded file content.
+      const looksLikeFilePointer =
+        text.trim().length < 300 &&
+        (/\{\{file[:\-]/.test(text) ||
+         /attached file/i.test(text) ||
+         /available in the attached/i.test(text));
+      if (looksLikeFilePointer) {
+        const fullTurnText = (turn.innerText ?? '').trim();
+        if (fullTurnText.length > text.trim().length * 2 && fullTurnText.length > 200) {
+          text = fullTurnText;
+        }
+      }
       const html = contentRoot?.innerHTML ?? '';
       const messageId = messageRoot.getAttribute('data-message-id');
       const turnId = messageRoot.getAttribute('data-testid');

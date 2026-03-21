@@ -11,7 +11,7 @@ import {
   parseDuration,
 } from "../browserMode.js";
 import { normalizeBrowserModelStrategy } from "../browser/modelStrategy.js";
-import type { BrowserModelStrategy } from "../browser/types.js";
+import type { BrowserAgentMode, BrowserModelStrategy } from "../browser/types.js";
 import type { CookieParam } from "../browser/types.js";
 import { getOracleHomeDir } from "../oracleHome.js";
 
@@ -24,17 +24,18 @@ const DEFAULT_CHROME_PROFILE = "Default";
 // Ordered array: most specific models first to ensure correct selection.
 // The browser label is passed to the model picker which fuzzy-matches against ChatGPT's UI.
 const BROWSER_MODEL_LABELS: [ModelName, string][] = [
-  // Most specific first (e.g., "gpt-5.2-thinking" before "gpt-5.2")
-  ["gpt-5.4-pro", "GPT-5.4 Pro"],
-  ["gpt-5.2-thinking", "GPT-5.2 Thinking"],
-  ["gpt-5.2-instant", "GPT-5.2 Instant"],
-  ["gpt-5.2-pro", "GPT-5.4 Pro"],
-  ["gpt-5.1-pro", "GPT-5.4 Pro"],
-  ["gpt-5-pro", "GPT-5.4 Pro"],
-  // Base models last (least specific)
-  ["gpt-5.4", "Thinking 5.4"],
-  ["gpt-5.2", "GPT-5.2"], // Selects "Auto" in ChatGPT UI
-  ["gpt-5.1", "GPT-5.2"], // Legacy alias → Auto
+  // ChatGPT UI as of March 2026: Latest, Instant, Thinking, Pro, Configure...
+  // No version numbers shown — just bare labels.
+  ["gpt-5.4-pro", "Pro"],
+  ["gpt-5.2-pro", "Pro"],
+  ["gpt-5.1-pro", "Pro"],
+  ["gpt-5-pro", "Pro"],
+  ["gpt-5.2-thinking", "Thinking"],
+  ["gpt-5.2-instant", "Instant"],
+  // Base models
+  ["gpt-5.4", "Thinking"],
+  ["gpt-5.2", "Latest"],
+  ["gpt-5.1", "Latest"],
   ["gemini-3-pro", "Gemini 3 Pro"],
   ["gemini-3-pro-deep-think", "gemini-3-deep-think"],
 ];
@@ -68,6 +69,7 @@ export interface BrowserFlagOptions {
   browserThinkingTime?: ThinkingTimeLevel;
   browserModelLabel?: string;
   browserModelStrategy?: BrowserModelStrategy;
+  browserAgentMode?: BrowserAgentMode;
   browserAllowCookieErrors?: boolean;
   remoteChrome?: string;
   browserPort?: number;
@@ -201,6 +203,7 @@ export async function buildBrowserConfig(
     hideWindow: options.browserHideWindow ? true : undefined,
     desiredModel,
     modelStrategy,
+    agentMode: options.browserAgentMode,
     debug: options.verbose ? true : undefined,
     // Allow cookie failures by default so runs can continue without Chrome/Keychain secrets.
     allowCookieErrors: options.browserAllowCookieErrors ?? true,

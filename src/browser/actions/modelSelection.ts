@@ -146,12 +146,18 @@ function buildModelSelectionExpression(
       const normalizedLabel = normalizeText(getButtonLabel());
       if (!normalizedLabel) return false;
       if (desiredVersion) {
-        if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4')) return false;
-        if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2')) return false;
-        if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
-        if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
+        // ChatGPT may show just "Pro" without a version number when the desired model
+        // is the current default. Accept bare "pro" as a match for version-qualified targets.
+        const labelHasAnyVersion = /5[ .-][0-9]/.test(normalizedLabel);
+        if (labelHasAnyVersion) {
+          if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4')) return false;
+          if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2')) return false;
+          if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
+          if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
+        }
+        // If label has NO version (e.g. just "Pro"), accept it if it matches the pro/instant/thinking qualifier
       }
-      if (wantsPro && !normalizedLabel.includes(' pro')) return false;
+      if (wantsPro && !normalizedLabel.includes(' pro') && normalizedLabel !== 'pro') return false;
       if (wantsInstant && !normalizedLabel.includes('instant')) return false;
       if (wantsThinking && !normalizedLabel.includes('thinking')) return false;
       // Also reject if button has variants we DON'T want

@@ -6,6 +6,7 @@ import type { BrowserRuntimeMetadata, BrowserSessionConfig } from "../sessionSto
 import {
   waitForAssistantResponse,
   captureAssistantMarkdown,
+  extractExpandedAssistantText,
   navigateToChatGPT,
   ensureNotBlocked,
   ensureLoggedIn,
@@ -31,6 +32,36 @@ import {
   alignPromptEchoMarkdown,
   type TargetInfoLite,
 } from "./reattachHelpers.js";
+
+function isFilePointerResponse(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    trimmed.length < 300 &&
+    (/\{\{file[:\-]/.test(trimmed) ||
+      /attached file/i.test(trimmed) ||
+      /available in the attached/i.test(trimmed))
+  );
+}
+
+async function enrichFilePointerResponse(
+  runtime: ChromeClient["Runtime"],
+  answerText: string,
+  answerMarkdown: string,
+  logger: BrowserLogger,
+  minTurnIndex?: number,
+): Promise<{ answerText: string; answerMarkdown: string }> {
+  if (!isFilePointerResponse(answerText)) {
+    return { answerText, answerMarkdown };
+  }
+  const expanded = await extractExpandedAssistantText(runtime, minTurnIndex).catch(() => null);
+  if (expanded && expanded.length > answerText.trim().length * 2) {
+    logger(
+      `Expanded agent-mode file response (${answerText.trim().length} → ${expanded.length} chars)`,
+    );
+    return { answerText: expanded, answerMarkdown: expanded };
+  }
+  return { answerText, answerMarkdown };
+}
 
 export interface ReattachDeps {
   listTargets?: () => Promise<TargetInfoLite[]>;
@@ -149,6 +180,13 @@ export async function resumeBrowserSession(
         "Reattach markdown capture timed out",
       )) ?? recovered.text;
     const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
+    const enriched = await enrichFilePointerResponse(
+      Runtime,
+      aligned.answerText,
+      aligned.answerMarkdown,
+      logger,
+      minTurnIndex ?? undefined,
+    );
 
     if (client && typeof client.close === "function") {
       try {
@@ -158,7 +196,7 @@ export async function resumeBrowserSession(
       }
     }
 
-    return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
+    return { answerText: enriched.answerText, answerMarkdown: enriched.answerMarkdown };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger(
@@ -260,6 +298,13 @@ async function resumeBrowserSessionViaNewChrome(
   );
   const markdown = (await captureMarkdown(Runtime, recovered.meta, logger)) ?? recovered.text;
   const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
+  const enriched = await enrichFilePointerResponse(
+    Runtime,
+    aligned.answerText,
+    aligned.answerMarkdown,
+    logger,
+    minTurnIndex ?? undefined,
+  );
 
   if (client && typeof client.close === "function") {
     try {
@@ -283,7 +328,7 @@ async function resumeBrowserSessionViaNewChrome(
     }
   }
 
-  return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
+  return { answerText: enriched.answerText, answerMarkdown: enriched.answerMarkdown };
 }
 
 // biome-ignore lint/style/useNamingConvention: test-only export used in vitest suite

@@ -246,6 +246,94 @@ export async function verifyDevToolsReachable({
   return { ok: false, error: "unreachable" };
 }
 
+export interface DetectedChromeDebugPort {
+  port: number;
+  pid?: number;
+}
+
+export async function detectRunningChromeDebugPort(
+  userDataDir: string,
+): Promise<DetectedChromeDebugPort | null> {
+  if (process.platform === "win32") {
+    // Keep this cheap/cross-platform for now; caller already has file-based reuse on Windows.
+    return null;
+  }
+
+  try {
+    const { stdout } = await execFileAsync("ps", ["-ax", "-o", "pid=,command="], {
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const lines = String(stdout ?? "").split("\n");
+    const needle = userDataDir;
+    const perPort = new Map<
+      number,
+      { count: number; mainPid?: number; anyPid?: number; score: number }
+    >();
+
+    for (const line of lines) {
+      if (!line) continue;
+      const match = line.match(/^\s*(\d+)\s+(.*)$/);
+      if (!match) continue;
+      const pid = Number.parseInt(match[1] ?? "", 10);
+      const command = match[2] ?? "";
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      if (!command.includes(needle) || !command.includes("--user-data-dir")) continue;
+
+      const portMatch = command.match(/--remote-debugging-port=(\d+)/);
+      if (!portMatch) continue;
+      const port = Number.parseInt(portMatch[1] ?? "", 10);
+      if (!Number.isFinite(port) || port <= 0 || port > 65_535) continue;
+
+      const lower = command.toLowerCase();
+      const isHelper = lower.includes("helper") || lower.includes("--type=");
+      const isMainChrome = !isHelper && (lower.includes("google chrome") || lower.includes("chromium"));
+      const score = isMainChrome ? 100 : isHelper ? 10 : 30;
+
+      const existing = perPort.get(port) ?? { count: 0, score: 0 };
+      existing.count += 1;
+      existing.anyPid = existing.anyPid ?? pid;
+      if (isMainChrome) {
+        existing.mainPid = existing.mainPid ?? pid;
+      }
+      existing.score += score;
+      perPort.set(port, existing);
+    }
+
+    if (!perPort.size) {
+      return null;
+    }
+
+    let bestPort = 0;
+    let best: { count: number; mainPid?: number; anyPid?: number; score: number } | null = null;
+    for (const [port, candidate] of perPort.entries()) {
+      if (!best) {
+        best = candidate;
+        bestPort = port;
+        continue;
+      }
+      const better =
+        candidate.score > best.score ||
+        (candidate.score === best.score && candidate.count > best.count) ||
+        (candidate.score === best.score && candidate.count === best.count && port > bestPort);
+      if (better) {
+        best = candidate;
+        bestPort = port;
+      }
+    }
+
+    if (!best) {
+      return null;
+    }
+
+    return {
+      port: bestPort,
+      pid: best.mainPid ?? best.anyPid,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function shouldCleanupManualLoginProfileState(
   userDataDir: string,
   logger?: ProfileStateLogger,
@@ -318,7 +406,7 @@ export async function cleanupStaleProfileState(
   logger?.("Cleaned up stale Chrome profile locks");
 }
 
-async function isChromeUsingUserDataDir(userDataDir: string): Promise<boolean> {
+export async function isChromeUsingUserDataDir(userDataDir: string): Promise<boolean> {
   if (process.platform === "win32") {
     // On Windows, lockfiles are typically held open and removal should fail anyway; avoid expensive process scans.
     return false;

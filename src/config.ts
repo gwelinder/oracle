@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import JSON5 from "json5";
 import { getOracleHomeDir } from "./oracleHome.js";
-import type { BrowserModelStrategy } from "./browser/types.js";
+import type { BrowserAgentMode, BrowserModelStrategy } from "./browser/types.js";
 import type { ThinkingTimeLevel } from "./oracle/types.js";
 
 export type EnginePreference = "api" | "browser";
@@ -47,6 +47,8 @@ export interface BrowserConfigDefaults {
   hideWindow?: boolean;
   keepBrowser?: boolean;
   modelStrategy?: BrowserModelStrategy;
+  /** Agent mode preference for ChatGPT browser runs: on | off | current */
+  agentMode?: BrowserAgentMode;
   /** Thinking time intensity (ChatGPT Thinking/Pro models): 'light', 'standard', 'extended', 'heavy' */
   thinkingTime?: ThinkingTimeLevel;
   /** Skip cookie sync and reuse a persistent automation profile (waits for manual ChatGPT login). */
