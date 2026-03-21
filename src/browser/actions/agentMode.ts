@@ -77,17 +77,18 @@ function buildAgentModeExpression(mode: Exclude<BrowserAgentMode, "current">): s
     const TARGET_MODE = ${targetModeLiteral};
     const MENU_CONTAINER_SELECTOR = ${menuContainerLiteral};
     const MENU_ITEM_SELECTOR = ${menuItemLiteral};
+    // Selectors for the ChatGPT composer tools (+) button.
+    // Keep these specific — generic selectors like [aria-label*="attachment"] or
+    // [data-testid*="plus"] match Google Workspace / Gmail connector buttons that
+    // appear when the user's Google account is linked.
     const TOOL_BUTTON_SELECTORS = [
       '#composer-plus-btn',
       'button[data-testid="composer-plus-btn"]',
       '[data-testid*="composer-plus"]',
-      '[data-testid*="plus"]',
-      'button[aria-label*="Tools"]',
-      'button[aria-label*="tools"]',
-      'button[aria-label*="add"]',
-      'button[aria-label*="attachment"]',
-      'button[aria-label*="file"]',
     ];
+
+    // Containers that indicate a connector/integration popup — skip buttons inside these.
+    const CONNECTOR_EXCLUSION = '[data-testid*="connector"], [data-testid*="integration"], [data-testid*="plugin"], [role="dialog"], [data-testid*="google"], [data-testid*="gmail"]';
 
     const INITIAL_WAIT_MS = 160;
     const MAX_WAIT_MS = 12000;
@@ -194,13 +195,61 @@ function buildAgentModeExpression(mode: Exclude<BrowserAgentMode, "current">): s
       return null;
     };
 
+    const dismissConnectorPopups = () => {
+      // Dismiss any open Google Apps / connector / integration dialogs that may overlay the composer.
+      const dialogSelectors = [
+        '[role="dialog"]',
+        '[data-testid*="connector"]',
+        '[data-testid*="integration"]',
+        '[data-testid*="plugin"]',
+      ];
+      for (const selector of dialogSelectors) {
+        const dialogs = document.querySelectorAll(selector);
+        for (const dialog of dialogs) {
+          if (!(dialog instanceof HTMLElement)) continue;
+          if (!isVisible(dialog)) continue;
+          // Try to find and click a close/dismiss button inside the dialog
+          const closeBtn = dialog.querySelector('button[aria-label*="close"], button[aria-label*="Close"], button[aria-label*="dismiss"], button[aria-label*="cancel"]');
+          if (closeBtn instanceof HTMLElement) {
+            dispatchClickSequence(closeBtn);
+            continue;
+          }
+          // Press Escape as fallback
+          try {
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+          } catch {}
+        }
+      }
+    };
+
     const findToolsButton = () => {
+      // Scope search to the ChatGPT composer area to avoid clicking connector/integration buttons
+      const composerRoots = [
+        document.querySelector('[data-testid*="composer"]'),
+        document.querySelector('form'),
+      ].filter(Boolean);
+      const searchRoot = composerRoots[0] || document;
+
       for (const selector of TOOL_BUTTON_SELECTORS) {
-        const node = document.querySelector(selector);
-        if (node instanceof HTMLElement && isVisible(node)) {
+        const node = searchRoot.querySelector(selector);
+        if (!(node instanceof HTMLElement)) continue;
+        if (!isVisible(node)) continue;
+        // Skip buttons inside connector/integration containers
+        if (node.closest(CONNECTOR_EXCLUSION)) continue;
+        return node;
+      }
+
+      // Fallback: if the composer-scoped search missed, try document-wide but with strict filtering
+      if (searchRoot !== document) {
+        for (const selector of TOOL_BUTTON_SELECTORS) {
+          const node = document.querySelector(selector);
+          if (!(node instanceof HTMLElement)) continue;
+          if (!isVisible(node)) continue;
+          if (node.closest(CONNECTOR_EXCLUSION)) continue;
           return node;
         }
       }
+
       return null;
     };
 
@@ -273,6 +322,10 @@ function buildAgentModeExpression(mode: Exclude<BrowserAgentMode, "current">): s
 
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+    // Dismiss any connector/integration popups that might overlay the composer
+    dismissConnectorPopups();
+    await wait(100);
+
     if (!clickToolsButton()) {
       return { status: 'tools-button-missing' };
     }
@@ -314,6 +367,9 @@ function buildAgentModeExpression(mode: Exclude<BrowserAgentMode, "current">): s
       }
 
       if (!menuVisible && performance.now() - lastMenuOpenClick >= REOPEN_INTERVAL_MS) {
+        // Dismiss any connector popups that appeared after the last click
+        dismissConnectorPopups();
+        await wait(80);
         if (!clickToolsButton()) {
           return { status: 'tools-button-missing' };
         }
