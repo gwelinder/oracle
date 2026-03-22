@@ -40,17 +40,39 @@ export async function ensureAgentMode(
     returnByValue: true,
   });
 
-  // Post-action: dismiss any connector dialog that may have appeared with a delay.
-  // The "Using agent mode with connectors" dialog can render after the expression returns.
+  // Post-action: dismiss the "Using agent mode with connectors" safety dialog.
+  // This dialog has data-testid="modal-agent-connectors-safety" and appears after
+  // agent mode is toggled on when the account has GitHub/Google connectors active.
+  // We ALWAYS click "Turn off connectors" to prevent connectors from interfering.
   // Returns true if a connector dialog was dismissed (caller should re-prepare the composer).
   const dismissPostAction = async (): Promise<boolean> => {
     let dismissed = false;
-    for (let i = 0; i < 3; i++) {
-      await new Promise((r) => setTimeout(r, 400));
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 500));
       const r = await Runtime.evaluate({
         expression: `(() => {
           ${buildClickDispatcher()}
           const normalize = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+          // Primary: exact data-testid match for the connector safety modal
+          const modal = document.querySelector('#modal-agent-connectors-safety, [data-testid="modal-agent-connectors-safety"]');
+          if (modal && modal instanceof HTMLElement && modal.getBoundingClientRect().width > 0) {
+            const buttons = Array.from(modal.querySelectorAll('button'));
+            // "Turn off connectors" is btn-secondary; always prefer it
+            const turnOff = buttons.find((b) => {
+              const t = normalize(b.textContent || '');
+              return t.includes('turn off') || t.includes('sluk') || t.includes('deaktiver') || t.includes('disable');
+            });
+            if (turnOff) { dispatchClickSequence(turnOff); return 'dismissed-turn-off'; }
+            // Fallback: close button (data-testid="close-button")
+            const closeBtn = modal.querySelector('[data-testid="close-button"]');
+            if (closeBtn) { dispatchClickSequence(closeBtn); return 'dismissed-close'; }
+            // Last resort: any X button
+            const xBtn = buttons.find((b) => (b.textContent || '').trim().length < 3 && b.querySelector('svg'));
+            if (xBtn) { dispatchClickSequence(xBtn); return 'dismissed-x'; }
+          }
+
+          // Fallback: any dialog mentioning connectors
           const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(
             (el) => el instanceof HTMLElement && el.getBoundingClientRect().width > 0
           );
@@ -58,12 +80,13 @@ export async function ensureAgentMode(
             const text = normalize(d.textContent || '');
             if (!text.includes('connector')) continue;
             const buttons = Array.from(d.querySelectorAll('button'));
-            const turnOff = buttons.find((b) => normalize(b.textContent || '').includes('turn off') || normalize(b.textContent || '').includes('sluk') || normalize(b.textContent || '').includes('deaktiver'));
+            const turnOff = buttons.find((b) => {
+              const t = normalize(b.textContent || '');
+              return t.includes('turn off') || t.includes('sluk') || t.includes('deaktiver') || t.includes('disable');
+            });
             if (turnOff) { dispatchClickSequence(turnOff); return 'dismissed-turn-off'; }
-            const accept = buttons.find((b) => normalize(b.textContent || '').includes('i understand') || normalize(b.textContent || '').includes('ok'));
-            if (accept) { dispatchClickSequence(accept); return 'dismissed-accept'; }
-            const xBtn = d.querySelector('button:has(svg)');
-            if (xBtn && (xBtn.textContent || '').trim().length < 3) { dispatchClickSequence(xBtn); return 'dismissed-x'; }
+            const closeBtn = d.querySelector('[data-testid="close-button"]');
+            if (closeBtn) { dispatchClickSequence(closeBtn); return 'dismissed-close'; }
           }
           return 'none';
         })()`,
@@ -73,8 +96,11 @@ export async function ensureAgentMode(
       if (v.startsWith("dismissed")) {
         logger(`Connector dialog dismissed (${v})`);
         dismissed = true;
-        break;
+        // Keep polling briefly in case another dialog appears
+        continue;
       }
+      // If we already dismissed one and no more appear, stop
+      if (dismissed) break;
     }
     return dismissed;
   };
@@ -244,59 +270,49 @@ function buildAgentModeExpression(mode: Exclude<BrowserAgentMode, "current">): s
     };
 
     const dismissConnectorPopups = () => {
-      // Dismiss any open connector/integration dialogs that overlay the composer.
-      // Priority targets:
-      // 1. "Using agent mode with connectors" dialog — click "Turn off connectors"
-      //    to prevent connectors from interfering with automation.
-      // 2. Generic integration/connector popups — close button or Escape.
+      // Dismiss the "Using agent mode with connectors" safety dialog.
+      // Exact target: #modal-agent-connectors-safety / data-testid="modal-agent-connectors-safety"
+      // Always click "Turn off connectors" (btn-secondary) — we never want connectors active.
 
-      const allDialogs = Array.from(document.querySelectorAll(
-        '[role="dialog"], [data-testid*="connector"], [data-testid*="integration"], [data-testid*="plugin"], [data-testid*="modal"]'
-      )).filter((el) => el instanceof HTMLElement && isVisible(el));
-
-      for (const dialog of allDialogs) {
-        const dialogText = normalize(dialog.textContent || '');
-
-        // "Using agent mode with connectors" dialog
-        if (dialogText.includes('agent mode') && dialogText.includes('connector')) {
-          // Prefer "Turn off connectors" to keep automation clean
-          const buttons = Array.from(dialog.querySelectorAll('button'));
-          const turnOff = buttons.find((b) => {
-            const label = normalize(b.textContent || '');
-            return label.includes('turn off') || label.includes('sluk') || label.includes('deaktiver') || label.includes('disable');
-          });
-          if (turnOff instanceof HTMLElement) {
-            dispatchClickSequence(turnOff);
-            continue;
-          }
-          // Fallback: "I understand" / close button / X
-          const accept = buttons.find((b) => {
-            const label = normalize(b.textContent || '');
-            return label.includes('i understand') || label.includes('forstår') || label.includes('ok') || label.includes('got it');
-          });
-          if (accept instanceof HTMLElement) {
-            dispatchClickSequence(accept);
-            continue;
-          }
+      // Primary: exact testid match
+      const modal = document.querySelector('#modal-agent-connectors-safety, [data-testid="modal-agent-connectors-safety"]');
+      if (modal && modal instanceof HTMLElement && isVisible(modal)) {
+        const buttons = Array.from(modal.querySelectorAll('button'));
+        const turnOff = buttons.find((b) => {
+          const label = normalize(b.textContent || '');
+          return label.includes('turn off') || label.includes('sluk') || label.includes('deaktiver') || label.includes('disable');
+        });
+        if (turnOff instanceof HTMLElement) {
+          dispatchClickSequence(turnOff);
+          return;
         }
-
-        // Generic close: X button, close label, or Escape
-        const closeBtn = dialog.querySelector(
-          'button[aria-label*="close"], button[aria-label*="Close"], button[aria-label*="dismiss"], button[aria-label*="cancel"], button[aria-label*="Luk"]'
-        );
+        const closeBtn = modal.querySelector('[data-testid="close-button"]');
         if (closeBtn instanceof HTMLElement) {
           dispatchClickSequence(closeBtn);
-          continue;
+          return;
         }
-        // Try the X button (often the first/only button with just an SVG)
-        const xBtn = dialog.querySelector('button:has(svg)');
-        if (xBtn instanceof HTMLElement && (xBtn.textContent || '').trim().length < 3) {
-          dispatchClickSequence(xBtn);
-          continue;
+      }
+
+      // Fallback: any visible dialog mentioning connectors
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'))
+        .filter((el) => el instanceof HTMLElement && isVisible(el));
+      for (const dialog of dialogs) {
+        const text = normalize(dialog.textContent || '');
+        if (!text.includes('connector')) continue;
+        const buttons = Array.from(dialog.querySelectorAll('button'));
+        const turnOff = buttons.find((b) => {
+          const label = normalize(b.textContent || '');
+          return label.includes('turn off') || label.includes('sluk') || label.includes('deaktiver') || label.includes('disable');
+        });
+        if (turnOff instanceof HTMLElement) {
+          dispatchClickSequence(turnOff);
+          return;
         }
-        try {
-          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
-        } catch {}
+        const closeBtn = dialog.querySelector('[data-testid="close-button"]');
+        if (closeBtn instanceof HTMLElement) {
+          dispatchClickSequence(closeBtn);
+          return;
+        }
       }
     };
 
