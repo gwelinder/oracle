@@ -209,38 +209,79 @@ async function runJobInTab(
         );
       }
 
+      // Post-agent-mode stabilization: ChatGPT's agent-mode composer can take
+      // a moment to fully initialize after the toggle. Without this delay, the
+      // send can be silently swallowed (composerCleared: true, inConversation: false).
+      if (agentMode === "on") {
+        await delay(2000);
+        await raceDisconnect(
+          ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger),
+        );
+      }
+
       // Read baseline turn count
       const baselineTurns = await readTurnCount(Runtime).catch(() => null);
 
-      // Acquire profile lock to serialize prompt submissions
-      let profileLock: ProfileRunLock | null = null;
-      const lockTimeout = config.profileLockTimeoutMs ?? 300_000;
-      if (lockTimeout > 0) {
-        profileLock = await acquireProfileRunLock(userDataDir, {
-          timeoutMs: lockTimeout,
-          logger: parentLogger,
-        });
+      // Submit prompt with retry on swallow detection.
+      // Agent mode can silently swallow sends — composer clears but no conversation is created.
+      // On failure: clear composer, wait, retype, and retry with Enter key fallback.
+      const MAX_SEND_ATTEMPTS = 3;
+      let submitted = false;
+      for (let attempt = 0; attempt < MAX_SEND_ATTEMPTS; attempt++) {
+        // Acquire profile lock to serialize prompt submissions across tabs
+        let profileLock: ProfileRunLock | null = null;
+        const lockTimeout = config.profileLockTimeoutMs ?? 300_000;
+        if (lockTimeout > 0) {
+          profileLock = await acquireProfileRunLock(userDataDir, {
+            timeoutMs: lockTimeout,
+            logger: parentLogger,
+          });
+        }
+
+        try {
+          await raceDisconnect(
+            submitPrompt(
+              {
+                runtime: Runtime,
+                input: Input,
+                attachmentNames: [],
+                baselineTurns: baselineTurns ?? undefined,
+                inputTimeoutMs: config.inputTimeoutMs ?? undefined,
+              },
+              job.prompt,
+              logger,
+            ),
+          );
+          submitted = true;
+          break;
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          const isSwallowed =
+            msg.includes("did not appear in conversation") || msg.includes("send may have failed");
+
+          if (!isSwallowed || attempt >= MAX_SEND_ATTEMPTS - 1) {
+            throw error;
+          }
+
+          parentLogger(
+            `${prefix} Send swallowed (attempt ${attempt + 1}/${MAX_SEND_ATTEMPTS}); retrying...`,
+          );
+
+          // Clear, wait, re-prepare, and retry
+          await raceDisconnect(clearPromptComposer(Runtime, logger)).catch(() => undefined);
+          await delay(2000);
+          await raceDisconnect(
+            ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger),
+          );
+        } finally {
+          if (profileLock) {
+            await profileLock.release().catch(() => undefined);
+          }
+        }
       }
 
-      try {
-        // Submit prompt
-        await raceDisconnect(
-          submitPrompt(
-            {
-              runtime: Runtime,
-              input: Input,
-              attachmentNames: [],
-              baselineTurns: baselineTurns ?? undefined,
-              inputTimeoutMs: config.inputTimeoutMs ?? undefined,
-            },
-            job.prompt,
-            logger,
-          ),
-        );
-      } finally {
-        if (profileLock) {
-          await profileLock.release().catch(() => undefined);
-        }
+      if (!submitted) {
+        throw new Error("Prompt submission failed after all retry attempts");
       }
 
       parentLogger(`${prefix} Prompt submitted, waiting for response...`);
