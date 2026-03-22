@@ -492,7 +492,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const agentMode = config.agentMode ?? "current";
     if (agentMode !== "current") {
       const agentResult = await raceWithDisconnect(
-        withRetries(() => ensureAgentMode(Runtime, agentMode, logger), {
+        withRetries(() => ensureAgentMode(Runtime, Input, agentMode, logger), {
           retries: 2,
           delayMs: 300,
           onRetry: (attempt, error) => {
@@ -1506,7 +1506,7 @@ async function runRemoteBrowserMode(
 
     const agentMode = config.agentMode ?? "current";
     if (agentMode !== "current") {
-      const agentResult = await withRetries(() => ensureAgentMode(Runtime, agentMode, logger), {
+      const agentResult = await withRetries(() => ensureAgentMode(Runtime, Input, agentMode, logger), {
         retries: 2,
         delayMs: 300,
         onRetry: (attempt, error) => {

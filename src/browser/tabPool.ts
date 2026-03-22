@@ -189,7 +189,7 @@ async function runJobInTab(
       let connectorDismissed = false;
       if (agentMode !== "current") {
         const agentResult = await raceDisconnect(
-          withRetries(() => ensureAgentMode(Runtime, agentMode, logger), {
+          withRetries(() => ensureAgentMode(Runtime, Input, agentMode, logger), {
             retries: 2,
             delayMs: 500,
           }),
