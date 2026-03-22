@@ -152,7 +152,7 @@ async function dismissConnectorSafetyDialog(
   _Input: ChromeClient["Input"],
   logger: BrowserLogger,
 ): Promise<boolean> {
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 8; i++) {
     await delay(500);
     const result = await evalReturnValue<string>(Runtime, `(() => {
       ${buildClickDispatcher()}

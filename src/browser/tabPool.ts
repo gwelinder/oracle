@@ -15,6 +15,7 @@ import {
 } from "./pageActions.js";
 import { submitPrompt, clearPromptComposer } from "./actions/promptComposer.js";
 import { delay, estimateTokenCount, withRetries } from "./utils.js";
+import { buildClickDispatcher } from "./actions/domEvents.js";
 import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR } from "./constants.js";
 import type { ProfileRunLock } from "./profileState.js";
 import { acquireProfileRunLock } from "./profileState.js";
@@ -214,10 +215,24 @@ async function runJobInTab(
       // send can be silently swallowed (composerCleared: true, inConversation: false).
       if (agentMode === "on") {
         await delay(2000);
+        // The connector safety dialog can appear with a long delay after toggle.
+        // Poll for it during the stabilization window.
+        for (let poll = 0; poll < 4; poll++) {
+          const dismissed = await dismissConnectorDialogIfPresent(Runtime, parentLogger, prefix);
+          if (dismissed) {
+            await delay(1000);
+            await raceDisconnect(clearPromptComposer(Runtime, logger)).catch(() => undefined);
+            break;
+          }
+          await delay(500);
+        }
         await raceDisconnect(
           ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger),
         );
       }
+
+      // Final connector dialog check right before submission
+      await dismissConnectorDialogIfPresent(Runtime, parentLogger, prefix);
 
       // Read baseline turn count
       const baselineTurns = await readTurnCount(Runtime).catch(() => null);
@@ -267,9 +282,12 @@ async function runJobInTab(
             `${prefix} Send swallowed (attempt ${attempt + 1}/${MAX_SEND_ATTEMPTS}); retrying...`,
           );
 
+          // Dismiss connector dialog if it appeared during submission
+          await dismissConnectorDialogIfPresent(Runtime, parentLogger, prefix);
           // Clear, wait, re-prepare, and retry
           await raceDisconnect(clearPromptComposer(Runtime, logger)).catch(() => undefined);
           await delay(2000);
+          await dismissConnectorDialogIfPresent(Runtime, parentLogger, prefix);
           await raceDisconnect(
             ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger),
           );
@@ -349,6 +367,59 @@ async function runJobInTab(
       // ignore
     }
   }
+}
+
+/**
+ * Dismiss the "Using agent mode with connectors" dialog if present.
+ * This dialog can appear at any time after agent mode is enabled — during navigation,
+ * after page load, or even mid-prompt-submission. We check for it at multiple points.
+ * Uses simple .click() which works reliably on this dialog's buttons.
+ */
+async function dismissConnectorDialogIfPresent(
+  Runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  prefix: string,
+): Promise<boolean> {
+  const clickDispatcher = buildClickDispatcher();
+  try {
+    const { result } = await Runtime.evaluate({
+      expression: `(() => {
+        ${clickDispatcher}
+        const normalize = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        // Check the wrapper by id/testid
+        const wrapper = document.querySelector('#modal-agent-connectors-safety, [data-testid="modal-agent-connectors-safety"]');
+        if (wrapper && wrapper.getBoundingClientRect().width > 0) {
+          const buttons = Array.from(wrapper.querySelectorAll('button'));
+          const turnOff = buttons.find(b => normalize(b.textContent).includes('turn off') || normalize(b.textContent).includes('sluk'));
+          if (turnOff) { turnOff.click(); return 'turn-off-wrapper'; }
+          const close = wrapper.querySelector('[data-testid="close-button"]');
+          if (close) { close.click(); return 'close-wrapper'; }
+        }
+        // Check any visible dialog with connector text
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'))
+          .filter(el => el instanceof HTMLElement && el.getBoundingClientRect().width > 50);
+        for (const d of dialogs) {
+          const text = normalize(d.textContent || '');
+          if (!text.includes('connector')) continue;
+          const buttons = Array.from(d.querySelectorAll('button'));
+          const turnOff = buttons.find(b => normalize(b.textContent).includes('turn off') || normalize(b.textContent).includes('sluk'));
+          if (turnOff) { turnOff.click(); return 'turn-off-dialog'; }
+          const close = d.querySelector('[data-testid="close-button"]');
+          if (close) { (close as HTMLElement).click(); return 'close-dialog'; }
+        }
+        return 'none';
+      })()`,
+      returnByValue: true,
+    });
+    const v = typeof result?.value === "string" ? result.value : "none";
+    if (v !== "none") {
+      logger(`${prefix} Connector dialog dismissed (${v})`);
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
 }
 
 async function readTurnCount(Runtime: ChromeClient["Runtime"]): Promise<number | null> {
