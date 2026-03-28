@@ -15,3 +15,8 @@ oracle-*.tgz
 oracle-*.tgz.sha1
 oracle-*.tgz.sha256
 /.claude
+
+# Local working files - not for public git
+clickup-debug/
+econ-mvp/
+BUG-AGENT-MODE-*.md
