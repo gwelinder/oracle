@@ -51,13 +51,16 @@ export async function ensureAgentMode(
   await delay(300);
 
   // Step 1: Open the + menu via CDP mouse click (synthetic .click() doesn't work)
-  const plusPos = await evalReturnValue<{ x: number; y: number } | null>(Runtime, `(() => {
+  const plusPos = await evalReturnValue<{ x: number; y: number } | null>(
+    Runtime,
+    `(() => {
     const btn = document.querySelector('#composer-plus-btn');
     if (!btn) return null;
     const r = btn.getBoundingClientRect();
     if (r.width <= 0) return null;
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  })()`);
+  })()`,
+  );
 
   if (!plusPos) {
     await logDomFailure(Runtime, logger, "agent-mode-plus-btn");
@@ -68,13 +71,16 @@ export async function ensureAgentMode(
   await delay(800);
 
   // Step 2: Hover over "More" to open the submenu
-  const morePos = await evalReturnValue<{ x: number; y: number } | null>(Runtime, `(() => {
+  const morePos = await evalReturnValue<{ x: number; y: number } | null>(
+    Runtime,
+    `(() => {
     const items = Array.from(document.querySelectorAll('[role=menuitem][aria-haspopup=menu]'));
     const more = items.find(i => (i.textContent || '').trim() === 'More');
     if (!more || more.getBoundingClientRect().width <= 0) return null;
     const r = more.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  })()`);
+  })()`,
+  );
 
   if (!morePos) {
     // Close the menu and bail
@@ -91,7 +97,9 @@ export async function ensureAgentMode(
     x: number;
     y: number;
     checked: string;
-  } | null>(Runtime, `(() => {
+  } | null>(
+    Runtime,
+    `(() => {
     const items = Array.from(document.querySelectorAll('[role=menuitemradio]'));
     const agent = items.find(i => {
       const t = (i.textContent || '').trim().toLowerCase();
@@ -100,7 +108,8 @@ export async function ensureAgentMode(
     if (!agent || agent.getBoundingClientRect().width <= 0) return null;
     const r = agent.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2, checked: agent.getAttribute('aria-checked') || 'false' };
-  })()`);
+  })()`,
+  );
 
   if (!agentItem) {
     await pressEscape(Runtime);
@@ -154,7 +163,9 @@ async function dismissConnectorSafetyDialog(
 ): Promise<boolean> {
   for (let i = 0; i < 8; i++) {
     await delay(500);
-    const result = await evalReturnValue<string>(Runtime, `(() => {
+    const result = await evalReturnValue<string>(
+      Runtime,
+      `(() => {
       ${buildClickDispatcher()}
       const normalize = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -186,7 +197,8 @@ async function dismissConnectorSafetyDialog(
         if (closeBtn) { dispatchClickSequence(closeBtn); return 'dismissed-close'; }
       }
       return 'none';
-    })()`);
+    })()`,
+    );
 
     if (result?.startsWith("dismissed")) {
       logger(`Connector safety dialog dismissed (${result})`);
@@ -236,7 +248,9 @@ async function disableActiveConnectors(
   await delay(800);
 
   // Toggle OFF all checked switches in the connector menu
-  const disabled = await evalReturnValue<string[]>(Runtime, `(() => {
+  const disabled = await evalReturnValue<string[]>(
+    Runtime,
+    `(() => {
     ${buildClickDispatcher()}
     const menus = Array.from(document.querySelectorAll('[role=menu]'))
       .filter(el => el.getBoundingClientRect().width > 30);
@@ -259,7 +273,8 @@ async function disableActiveConnectors(
       }
     }
     return disabled;
-  })()`);
+  })()`,
+  );
 
   if (disabled && disabled.length > 0) {
     logger(`Disabled connectors: ${disabled.join(", ")}`);

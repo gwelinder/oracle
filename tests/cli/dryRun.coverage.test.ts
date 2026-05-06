@@ -122,7 +122,7 @@ describe("runDryRunSummary", () => {
     );
 
     const joined = log.mock.calls.flat().join("\n");
-    expect(joined).toContain("Cookies: copy from Chrome (all from Chrome profile)");
+    expect(joined).toContain("Cookies: copy from Chrome");
     expect(joined).toContain("No files attached");
   });
 
@@ -148,10 +148,12 @@ describe("runDryRunSummary", () => {
         version: "0.4.1",
         previewMode: "json",
         log,
+        browserConfig: { attachRunning: true },
       },
       { assembleBrowserPromptImpl },
     );
     let joined = log.mock.calls.flat().join("\n");
+    expect(joined).toContain("Browser control: attach to an already-running local Chrome session");
     expect(joined).toContain("Preview JSON");
     expect(joined).toContain('"composerText": "Preview text"');
 

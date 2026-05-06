@@ -4,7 +4,7 @@ import { runOracle } from "@src/oracle.ts";
 import { MockClient, MockStream, buildResponse } from "./helpers.ts";
 
 describe("runOracle request payload", () => {
-  test("maps gpt-5.1-pro alias to gpt-5.4-pro API model", async () => {
+  test("maps gpt-5.1-pro alias to gpt-5.5-pro API model", async () => {
     const stream = new MockStream([], buildResponse());
     const client = new MockClient(stream);
     const logs: string[] = [];
@@ -20,13 +20,13 @@ describe("runOracle request payload", () => {
         log: (msg: string) => logs.push(msg),
       },
     );
-    expect(client.lastRequest?.model).toBe("gpt-5.4-pro");
-    expect(logs.join("\n")).toContain("(API: gpt-5.4-pro)");
+    expect(client.lastRequest?.model).toBe("gpt-5.5-pro");
+    expect(logs.join("\n")).toContain("(API: gpt-5.5-pro)");
     expect(logs.join("\n")).toContain("gpt-5.1-pro");
-    expect(logs.join("\n")).toContain("OpenAI API uses `gpt-5.4-pro`");
+    expect(logs.join("\n")).toContain("OpenAI API uses `gpt-5.5-pro`");
   });
 
-  test("maps gpt-5.2-pro alias to gpt-5.4-pro API model", async () => {
+  test("maps gpt-5.2-pro alias to gpt-5.5-pro API model", async () => {
     const stream = new MockStream([], buildResponse());
     const client = new MockClient(stream);
     const logs: string[] = [];
@@ -42,10 +42,10 @@ describe("runOracle request payload", () => {
         log: (msg: string) => logs.push(msg),
       },
     );
-    expect(client.lastRequest?.model).toBe("gpt-5.4-pro");
-    expect(logs.join("\n")).toContain("(API: gpt-5.4-pro)");
+    expect(client.lastRequest?.model).toBe("gpt-5.5-pro");
+    expect(logs.join("\n")).toContain("(API: gpt-5.5-pro)");
     expect(logs.join("\n")).toContain("gpt-5.2-pro");
-    expect(logs.join("\n")).toContain("OpenAI API uses `gpt-5.4-pro`");
+    expect(logs.join("\n")).toContain("OpenAI API uses `gpt-5.5-pro`");
   });
 
   test("search enabled by default", async () => {
@@ -127,7 +127,7 @@ describe("runOracle request payload", () => {
       await runOracle(
         {
           prompt: "Claude custom endpoint",
-          model: "claude-4.5-sonnet",
+          model: "claude-4.6-sonnet",
           baseUrl: "https://litellm.test/v1",
           background: false,
         },
@@ -142,7 +142,7 @@ describe("runOracle request payload", () => {
         },
       );
       expect(captured).toEqual([
-        { apiKey: "ak-test", baseUrl: "https://litellm.test/v1", model: "claude-4.5-sonnet" },
+        { apiKey: "ak-test", baseUrl: "https://litellm.test/v1", model: "claude-4.6-sonnet" },
       ]);
     } finally {
       if (originalAnthropicBaseUrl === undefined) {

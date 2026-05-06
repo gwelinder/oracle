@@ -159,6 +159,8 @@ export async function navigateToPromptReadyWithFallback(
     logger(
       `Prompt not ready after ${Math.round(timeoutMs / 1000)}s on ${url}; retrying ${fallbackUrl} with ${Math.round(fallbackTimeout / 1000)}s timeout.`,
     );
+    await navigate(Page, Runtime, "about:blank", logger);
+    await delay(250);
     await navigate(Page, Runtime, fallbackUrl, logger);
     await ensureBlocked(Runtime, headless, logger);
     await dismissBlockingUi(Runtime, logger).catch(() => false);
@@ -245,88 +247,79 @@ async function attemptWelcomeBackLogin(
   Runtime: ChromeClient["Runtime"],
   logger: BrowserLogger,
 ): Promise<boolean> {
-  const outcome = await Runtime.evaluate({
-    expression: `(() => {
-      // Learned: "Welcome back" shows as a modal with account chips; click the email chip.
-      const TIMEOUT_MS = 30000;
-      const getLabel = (node) =>
-        (node?.textContent || node?.getAttribute?.('aria-label') || '').trim();
-      const isAccount = (label) =>
-        Boolean(label) &&
-        label.includes('@') &&
-        !/log in|sign up|create account|another account/i.test(label);
-      const findAccount = () => {
-        const candidates = Array.from(document.querySelectorAll('[role="button"],button,a'));
-        return candidates.find((node) => isAccount(getLabel(node))) || null;
-      };
-      const clickAccount = () => {
-        const account = findAccount();
-        if (!account) return null;
-        try {
-          (account).click();
-        } catch (_error) {
-          return { clicked: false, reason: 'click-failed' };
-        }
-        return { clicked: true, label: getLabel(account) };
-      };
-      const immediate = clickAccount();
-      if (immediate) {
-        return immediate;
-      }
-      const root = document.documentElement || document.body;
-      if (!root) {
-        return { clicked: false, reason: 'no-root' };
-      }
-      return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          observer.disconnect();
-          resolve({ clicked: false, reason: 'timeout' });
-        }, TIMEOUT_MS);
-        const observer = new MutationObserver(() => {
-          const result = clickAccount();
-          if (result) {
-            clearTimeout(timer);
-            observer.disconnect();
-            resolve(result);
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    let outcome;
+    try {
+      outcome = await Runtime.evaluate({
+        expression: `(() => {
+          // Learned: "Welcome back" shows as a modal with account chips; click the email chip.
+          const getLabel = (node) =>
+            (node?.textContent || node?.getAttribute?.('aria-label') || '').trim();
+          const isAccount = (label) =>
+            Boolean(label) &&
+            label.includes('@') &&
+            !/log in|sign up|create account|another account/i.test(label);
+          const candidates = Array.from(document.querySelectorAll('[role="button"],button,a'));
+          const account = candidates.find((node) => isAccount(getLabel(node))) || null;
+          if (!account) {
+            return { clicked: false, reason: 'not-found' };
           }
-        });
-        observer.observe(root, {
-          subtree: true,
-          childList: true,
-          characterData: true,
-        });
+          const label = getLabel(account);
+          setTimeout(() => {
+            try {
+              account.click();
+            } catch {
+              // ignore; caller will re-probe login state
+            }
+          }, 0);
+          return { clicked: true, label };
+        })()`,
+        awaitPromise: false,
+        returnByValue: true,
       });
-    })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  if (outcome.exceptionDetails) {
-    const details = outcome.exceptionDetails;
-    const description =
-      (details.exception &&
-        typeof details.exception.description === "string" &&
-        details.exception.description) ||
-      details.text ||
-      "unknown error";
-    logger(`Welcome back auto-select probe failed: ${description}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/navigated or closed|context was destroyed|target closed/i.test(message)) {
+        logger("Welcome back account click triggered navigation.");
+        return true;
+      }
+      logger(`Welcome back auto-select probe failed: ${message}`);
+      return false;
+    }
+    if (outcome.exceptionDetails) {
+      const details = outcome.exceptionDetails;
+      const description =
+        (details.exception &&
+          typeof details.exception.description === "string" &&
+          details.exception.description) ||
+        details.text ||
+        "unknown error";
+      logger(`Welcome back auto-select probe failed: ${description}`);
+      return false;
+    }
+    const result = outcome.result?.value as
+      | { clicked?: boolean; reason?: string; label?: string }
+      | undefined;
+    if (!result) {
+      logger("Welcome back auto-select probe returned no result.");
+      return false;
+    }
+    if (!("clicked" in result) && !("reason" in result)) {
+      logger("Welcome back auto-select probe returned an unexpected result.");
+      return false;
+    }
+    if (result.clicked) {
+      logger(`Welcome back modal detected; selected account ${result.label ?? "(unknown)"}`);
+      return true;
+    }
+    if (result.reason && result.reason !== "not-found") {
+      logger(`Welcome back modal present but auto-select failed (${result.reason}).`);
+      return false;
+    }
+    await delay(500);
   }
-  const result = outcome.result?.value as
-    | { clicked?: boolean; reason?: string; label?: string }
-    | undefined;
-  if (!result) {
-    logger("Welcome back auto-select probe returned no result.");
-    return false;
-  }
-  if (result?.clicked) {
-    logger(`Welcome back modal detected; selected account ${result.label ?? "(unknown)"}`);
-    return true;
-  }
-  if (result?.reason && result.reason !== "timeout") {
-    logger(`Welcome back modal present but auto-select failed (${result.reason}).`);
-  }
-  if (result?.reason === "timeout") {
-    logger("Welcome back modal not detected after login probe failure.");
-  }
+  logger("Welcome back modal not detected after login probe failure.");
   return false;
 }
 
@@ -447,7 +440,6 @@ function buildLoginProbeExpression(timeoutMs: number): string {
   return `(async () => {
     // Learned: /backend-api/me is the most reliable "am I logged in" signal.
     // Some UIs render without a session; use DOM + network for a robust answer.
-    const timer = setTimeout(() => {}, ${timeoutMs});
     const pageUrl = typeof location === 'object' && location?.href ? location.href : null;
     const onAuthPage =
       typeof location === 'object' &&
@@ -473,12 +465,26 @@ function buildLoginProbeExpression(timeoutMs: number): string {
       const textMatches = (text) => {
         if (!text) return false;
         const normalized = text.toLowerCase().trim();
-        return ['log in', 'login', 'sign in', 'signin', 'continue with'].some((needle) =>
-          normalized.startsWith(needle),
+        return (
+          ['log in', 'login', 'sign in', 'signin', 'continue with', 'sign up for free'].some(
+            (needle) => normalized.startsWith(needle),
+          ) ||
+          normalized.includes('get responses tailored to you') ||
+          normalized.includes('log in to get answers')
         );
       };
       for (const node of candidates) {
         if (!(node instanceof HTMLElement)) continue;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        if (
+          rect.width <= 0 ||
+          rect.height <= 0 ||
+          style.display === 'none' ||
+          style.visibility === 'hidden'
+        ) {
+          continue;
+        }
         const label =
           node.textContent?.trim() ||
           node.getAttribute('aria-label') ||
@@ -491,33 +497,45 @@ function buildLoginProbeExpression(timeoutMs: number): string {
       return false;
     };
 
-    let status = 0;
-    let error = null;
-    try {
-      if (typeof fetch === 'function') {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), ${timeoutMs});
-        try {
-          // Credentials included so we see a 200 only when cookies are valid.
-          const response = await fetch('/backend-api/me', {
-            cache: 'no-store',
-            credentials: 'include',
-            signal: controller.signal,
-          });
-          status = response.status || 0;
-        } finally {
-          clearTimeout(timeout);
+    const readBackendStatus = async () => {
+      try {
+        if (typeof fetch === 'function') {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), ${timeoutMs});
+          try {
+            // Credentials included so we see a 200 only when cookies are valid.
+            const response = await fetch('/backend-api/me', {
+              cache: 'no-store',
+              credentials: 'include',
+              signal: controller.signal,
+            });
+            return { status: response.status || 0, error: null };
+          } finally {
+            clearTimeout(timeout);
+          }
         }
+      } catch (err) {
+        return { status: 0, error: err ? String(err) : 'unknown' };
       }
-    } catch (err) {
-      error = err ? String(err) : 'unknown';
+      return { status: 0, error: null };
+    };
+
+    let { status, error } = await readBackendStatus();
+    let domLoginCta = hasLoginCta();
+    const settleDeadline = Date.now() + Math.min(${timeoutMs}, 2500);
+    while (!domLoginCta && Date.now() < settleDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      domLoginCta = hasLoginCta();
+      if (status === 0 || status === 401 || status === 403) {
+        const next = await readBackendStatus();
+        status = next.status;
+        error = next.error;
+      }
     }
 
-    const domLoginCta = hasLoginCta();
     const loginSignals = domLoginCta || onAuthPage;
-    clearTimeout(timer);
     return {
-      ok: !loginSignals && (status === 0 || status === 200),
+      ok: !loginSignals && status === 200,
       status,
       redirected: false,
       url: pageUrl,

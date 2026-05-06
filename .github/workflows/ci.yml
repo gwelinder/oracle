@@ -18,10 +18,12 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: "20"
-      - uses: pnpm/action-setup@v4
+          node-version: "24"
+      - uses: pnpm/action-setup@v6
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
+      - run: pnpm run docs:site
+        if: matrix.os == 'ubuntu-latest'
       - run: pnpm run test
       - run: pnpm run build
         if: matrix.os == 'ubuntu-latest'

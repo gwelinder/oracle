@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  assertResolvedModelSelectionForTest,
+  buildComposerSignalMatchersForTest,
   buildModelMatchersLiteralForTest,
   buildModelSelectionExpressionForTest,
+  ensureModelSelection,
 } from "../../src/browser/actions/modelSelection.js";
 
 const expectContains = (arr: string[], value: string) => {
@@ -9,6 +12,15 @@ const expectContains = (arr: string[], value: string) => {
 };
 
 describe("browser model selection matchers", () => {
+  it("includes pro + 5.5 tokens for gpt-5.5-pro", () => {
+    const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("gpt-5.5-pro");
+    expect(labelTokens).toContain("pro extended");
+    expect(labelTokens.some((t) => t.includes("5.5") || t.includes("5-5"))).toBe(true);
+    expect(testIdTokens.some((t) => t.includes("gpt-5.5-pro") || t.includes("gpt-5-5-pro"))).toBe(
+      true,
+    );
+  });
+
   it("includes pro + 5.4 tokens for gpt-5.4-pro", () => {
     const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("gpt-5.4-pro");
     expect(labelTokens.some((t) => t.includes("pro"))).toBe(true);
@@ -69,5 +81,103 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("const closeMenu = () =>");
     expect(expression).toContain("key: 'Escape'");
     expect(expression).toContain("closeMenu();");
+  });
+
+  it("recognizes current GPT-5.5 visible aliases in the picker expression", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("isTargetGpt55VisibleAlias");
+    expect(expression).toContain("label.includes('pro') && label.includes('extended')");
+    expect(expression).toContain("desiredVersion === '5-5'");
+  });
+
+  it("recognizes ChatGPT plus the Pro composer pill as the current Pro model", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("const hasProComposerPill = () =>");
+    expect(expression).toContain("currentLabel + ' + Pro'");
+    expect(expression).toContain("normalizedLabel === 'chatgpt' && hasProComposerPill()");
+  });
+
+  it("hard-rejects Thinking candidates when targeting Pro", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("const candidateHasThinking =");
+    expect(expression).toContain("if (wantsPro && candidateHasThinking) return 0;");
+    expect(expression).toContain("if (wantsPro && !candidateHasPro) return 0;");
+  });
+
+  it("does not treat per-row thinking effort controls as model options", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain("const isThinkingEffortControl = (node) =>");
+    expect(expression).toContain("data-model-picker-thinking-effort-action");
+    expect(expression).toContain("if (isThinkingEffortControl(option))");
+  });
+
+  it("fails loudly if post-selection state resolves to Thinking instead of Pro Extended", () => {
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "Thinking 5.5 Heavy")).toThrow(
+      /requires GPT-5.5 Pro Extended/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "GPT-5.5")).toThrow(
+      /requires GPT-5.5 Pro Extended/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "ChatGPT")).toThrow(
+      /requires GPT-5.5 Pro Extended/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.5-pro", "GPT-5.5 Pro")).not.toThrow();
+  });
+
+  it("does not validate the active picker label when strategy keeps current selection", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: { status: "already-selected", label: "Thinking 5.5 Heavy" } },
+      }),
+    };
+    const logger = vi.fn();
+
+    await expect(
+      ensureModelSelection(runtime as never, "gpt-5.5-pro", logger as never, "current"),
+    ).resolves.toBeUndefined();
+    expect(logger).toHaveBeenCalledWith("Model picker: Thinking 5.5 Heavy");
+  });
+
+  it("builds composer footer matchers for generic ChatGPT header states", () => {
+    expect(buildComposerSignalMatchersForTest("GPT-5.5 Pro")).toEqual({
+      includesAny: ["pro"],
+      excludesAny: ["thinking"],
+      allowBlank: false,
+    });
+    expect(buildComposerSignalMatchersForTest("Thinking 5.5")).toEqual({
+      includesAny: ["thinking"],
+      excludesAny: ["pro"],
+      allowBlank: false,
+    });
+    expect(buildComposerSignalMatchersForTest("GPT-5.2 Instant")).toEqual({
+      includesAny: [],
+      excludesAny: ["thinking", "pro"],
+      allowBlank: true,
+    });
+  });
+
+  it("waits for composer footer state when the header button stays generic", () => {
+    const expression = buildModelSelectionExpressionForTest("GPT-5.5 Pro");
+    expect(expression).toContain("const readComposerModelSignal = () =>");
+    expect(expression).toContain("const activeSelectionMatchesTarget = () =>");
+    expect(expression).toContain(
+      "const waitForTargetSelection = (previousButtonLabel, previousComposerSignal) =>",
+    );
+  });
+
+  it("accepts a post-click state change even when the footer text is localized", () => {
+    const expression = buildModelSelectionExpressionForTest("Thinking 5.5");
+    expect(expression).toContain(
+      "const selectionStateChanged = (previousButtonLabel, previousComposerSignal) =>",
+    );
+    expect(expression).toContain("const previousComposerSignal = readComposerModelSignal();");
+    expect(expression).toContain("const previousButtonLabel = normalizeText(getButtonLabel());");
+    expect(expression).toContain(".trailing svg");
+  });
+
+  it("finds the rewritten ChatGPT composer pill model button", () => {
+    const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
+    expect(expression).toContain('data-testid="model-switcher-dropdown-button"');
+    expect(expression).toContain("button.__composer-pill[aria-haspopup=");
   });
 });

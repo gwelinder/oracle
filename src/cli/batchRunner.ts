@@ -2,14 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
 import type { BrowserSessionConfig } from "../sessionStore.js";
-import type { RunOracleOptions } from "../oracle.js";
 import { readFiles, createFileSections, formatFileSection } from "../oracle.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import { runBatchInParallel } from "../browser/tabPool.js";
-import type { BatchJob, BatchJobResult, BatchResult, TabPoolOptions } from "../browser/tabPool.js";
+import type { BatchJob, BatchResult, TabPoolOptions } from "../browser/tabPool.js";
 import { formatElapsed } from "../oracle/format.js";
 import type { BrowserLogger } from "../browser/types.js";
-import type { LaunchedChrome } from "chrome-launcher";
 
 export interface BatchManifestEntry {
   slug: string;
@@ -137,7 +135,6 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchResult> {
     logger: batchLogger,
     verbose,
     onJobStart: (slug, workerIndex) => {
-      const remaining = jobs.length - results.length;
       log(chalk.cyan(`[tab-${workerIndex}] Starting: ${slug}`));
     },
     onJobComplete: async (result, completed, total) => {
@@ -145,11 +142,7 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchResult> {
       const color = result.status === "completed" ? chalk.green : chalk.red;
       const elapsed = formatElapsed(result.elapsedMs);
       const chars = result.answerText.length.toLocaleString();
-      log(
-        color(
-          `  ${icon} [${completed}/${total}] ${result.slug} ${elapsed} (${chars} chars)`,
-        ),
-      );
+      log(color(`  ${icon} [${completed}/${total}] ${result.slug} ${elapsed} (${chars} chars)`));
 
       // Write output file
       if (result.status === "completed" && result.answerText) {
@@ -175,7 +168,6 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchResult> {
     },
   };
 
-  const results: BatchJobResult[] = [];
   const batchResult = await runBatchInParallel(jobs, poolOptions);
 
   // Summary
@@ -200,11 +192,7 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchResult> {
   return batchResult;
 }
 
-function resolveOutputPath(
-  template: string | undefined,
-  slug: string,
-  cwd: string,
-): string | null {
+function resolveOutputPath(template: string | undefined, slug: string, cwd: string): string | null {
   if (!template) return null;
   const resolved = template.replace(/\{slug\}/g, slug);
   return path.isAbsolute(resolved) ? resolved : path.resolve(cwd, resolved);

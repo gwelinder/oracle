@@ -235,44 +235,69 @@ export async function clearPromptComposer(Runtime: ChromeClient["Runtime"], logg
   const inputSelectorsLiteral = JSON.stringify(INPUT_SELECTORS);
   const result = await Runtime.evaluate({
     expression: `(() => {
+      const SELECTORS = ${inputSelectorsLiteral};
       const fallback = document.querySelector(${fallbackSelectorLiteral});
       const editor = document.querySelector(${primarySelectorLiteral});
-      const inputSelectors = ${inputSelectorsLiteral};
-      let cleared = false;
-      if (fallback) {
-        fallback.value = '';
-        fallback.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteByCut' }));
-        fallback.dispatchEvent(new Event('change', { bubbles: true }));
-        cleared = true;
-      }
-      if (editor) {
-        editor.textContent = '';
-        editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteByCut' }));
-        cleared = true;
-      }
-      const nodes = inputSelectors
-        .map((selector) => document.querySelector(selector))
-        .filter((node) => Boolean(node));
-      for (const node of nodes) {
-        if (!node) continue;
-        if (node instanceof HTMLTextAreaElement) {
-          node.value = '';
+      const readValue = (node) => {
+        if (!node) return '';
+        if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) return node.value ?? '';
+        return node.innerText ?? node.textContent ?? '';
+      };
+      const dispatchClearEvents = (node) => {
+        try {
+          node.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: null, inputType: 'deleteContentBackward' }));
+        } catch {}
+        try {
           node.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteByCut' }));
-          node.dispatchEvent(new Event('change', { bubbles: true }));
-          cleared = true;
-          continue;
+        } catch {
+          node.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        node.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const clearEditable = (node) => {
+        if (!node) return false;
+        try {
+          node.focus?.();
+        } catch {}
+        if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+          node.value = '';
+          dispatchClearEvents(node);
+          return true;
         }
         if (node.isContentEditable || node.getAttribute('contenteditable') === 'true') {
+          try {
+            const selection = node.ownerDocument?.getSelection?.();
+            const range = node.ownerDocument?.createRange?.();
+            if (selection && range) {
+              range.selectNodeContents(node);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              node.ownerDocument?.execCommand?.('delete', false);
+            }
+          } catch {}
           node.textContent = '';
-          node.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteByCut' }));
-          cleared = true;
+          dispatchClearEvents(node);
+          return true;
         }
+        return false;
+      };
+      let cleared = false;
+      const nodes = SELECTORS
+        .map((selector) => document.querySelector(selector))
+        .filter((node) => Boolean(node));
+      for (const node of Array.from(new Set([fallback, editor, ...nodes])).filter(Boolean)) {
+        cleared = clearEditable(node) || cleared;
       }
-      return { cleared };
+      const remaining = Array.from(new Set([fallback, editor, ...nodes]))
+        .filter(Boolean)
+        .map((node) => readValue(node).trim())
+        .filter(Boolean);
+      return { cleared, remaining };
     })()`,
     returnByValue: true,
   });
-  if (!result.result?.value?.cleared) {
+  const value = result.result?.value as { cleared?: boolean; remaining?: string[] } | undefined;
+  if (!value?.cleared || (value.remaining?.length ?? 0) > 0) {
     await logDomFailure(Runtime, logger, "clear-composer");
     throw new Error("Failed to clear prompt composer");
   }
@@ -315,24 +340,42 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
       document.querySelector('form') ||
       document.body ||
       document;
-    const match = (node, name) => (node?.textContent || '').toLowerCase().includes(name);
+    const labelText = (node) =>
+      [
+        node?.textContent,
+        node?.getAttribute?.('aria-label'),
+        node?.getAttribute?.('title'),
+        node?.getAttribute?.('data-testid'),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+    const match = (node, name) => labelText(node).includes(name);
 
     // Restrict to attachment affordances; never scan generic div/span nodes (prompt text can contain the file name).
     const attachmentSelectors = [
       '[data-testid*="chip"]',
       '[data-testid*="attachment"]',
       '[data-testid*="upload"]',
-      '[aria-label="Remove file"]',
-      'button[aria-label="Remove file"]',
+      '[data-testid*="file"]',
+      '[aria-label*="Remove file"]',
+      'button[aria-label*="Remove file"]',
+      '[aria-label*="remove file"]',
+      'button[aria-label*="remove file"]',
     ];
+    const attachmentRoots = Array.from(new Set([composer, document])).filter(Boolean);
 
     const chipsReady = names.every((name) =>
-      Array.from(composer.querySelectorAll(attachmentSelectors.join(','))).some((node) => match(node, name)),
+      attachmentRoots.some((root) =>
+        Array.from(root.querySelectorAll(attachmentSelectors.join(','))).some((node) => match(node, name)),
+      ),
     );
     const inputsReady = names.every((name) =>
-      Array.from(composer.querySelectorAll('input[type="file"]')).some((el) =>
-        Array.from((el instanceof HTMLInputElement ? el.files : []) || []).some((file) =>
-          file?.name?.toLowerCase?.().includes(name),
+      attachmentRoots.some((root) =>
+        Array.from(root.querySelectorAll('input[type="file"]')).some((el) =>
+          Array.from((el instanceof HTMLInputElement ? el.files : []) || []).some((file) =>
+            file?.name?.toLowerCase?.().includes(name),
+          ),
         ),
       ),
     );
@@ -353,29 +396,37 @@ async function attemptSendButton(
   const script = `(() => {
     ${buildClickDispatcher()}
     const selectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
-    let button = null;
+    const isVisible = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const isEnabled = (node) => {
+      const ariaDisabled = node.getAttribute('aria-disabled');
+      const dataDisabled = node.getAttribute('data-disabled');
+      const style = window.getComputedStyle(node);
+      return !(
+        node.hasAttribute('disabled') ||
+        ariaDisabled === 'true' ||
+        dataDisabled === 'true' ||
+        style.pointerEvents === 'none' ||
+        style.display === 'none'
+      );
+    };
+    const candidates = [];
     for (const selector of selectors) {
-      button = document.querySelector(selector);
-      if (button) break;
+      candidates.push(...Array.from(document.querySelectorAll(selector)));
     }
+    const button = candidates.find((node) => isVisible(node) && isEnabled(node)) || null;
     if (!button) return 'missing';
-    const ariaDisabled = button.getAttribute('aria-disabled');
-    const dataDisabled = button.getAttribute('data-disabled');
-    const style = window.getComputedStyle(button);
-    const disabled =
-      button.hasAttribute('disabled') ||
-      ariaDisabled === 'true' ||
-      dataDisabled === 'true' ||
-      style.pointerEvents === 'none' ||
-      style.display === 'none';
-    // Learned: some send buttons render but are inert; only click when truly enabled.
-    if (disabled) return 'disabled';
     // Use unified pointer/mouse sequence to satisfy React handlers.
     dispatchClickSequence(button);
     return 'clicked';
   })()`;
 
-  const deadline = Date.now() + 8_000;
+  const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
     if (needAttachment) {
@@ -396,6 +447,16 @@ async function attemptSendButton(
       break;
     }
     await delay(100);
+  }
+  if (Array.isArray(attachmentNames) && attachmentNames.length > 0) {
+    throw new BrowserAutomationError(
+      "Attachments never reached a clickable send button before timeout.",
+      {
+        stage: "submit-prompt",
+        code: "attachment-send-not-ready",
+        attachmentNames,
+      },
+    );
   }
   return false;
 }
@@ -567,5 +628,6 @@ async function verifyPromptCommitted(
 
 // biome-ignore lint/style/useNamingConvention: test-only export used in vitest suite
 export const __test__ = {
+  attemptSendButton,
   verifyPromptCommitted,
 };

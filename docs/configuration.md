@@ -8,7 +8,7 @@ Oracle reads an optional per-user config from `~/.oracle/config.json`. The file 
 {
   // Default engine when neither CLI flag nor env decide
   engine: "api", // or "browser"
-  model: "gpt-5.4-pro", // older gpt-5.x-pro aliases → gpt-5.4-pro
+  model: "gpt-5.5-pro", // older gpt-5.x-pro aliases → gpt-5.5-pro
   search: "on", // "on" | "off"
 
   notify: {
@@ -35,12 +35,14 @@ Oracle reads an optional per-user config from `~/.oracle/config.json`. The file 
     assistantRecheckTimeoutMs: 120000, // time budget for the recheck attempt (default: 2m)
     reuseChromeWaitMs: 10000, // wait for a shared Chrome profile to appear before launching (parallel runs)
     profileLockTimeoutMs: 300000, // wait for the manual-login profile lock before sending (parallel runs)
+    maxConcurrentTabs: 3, // soft limit for concurrent ChatGPT tabs using one manual-login profile
     autoReattachDelayMs: 0, // delay before starting periodic auto-reattach attempts (0 = disabled)
     autoReattachIntervalMs: 0, // interval between auto-reattach attempts (0 = disabled)
     autoReattachTimeoutMs: 120000, // time budget per auto-reattach attempt (default: 2m)
     modelStrategy: "select", // select | current | ignore (ChatGPT only; ignored for Gemini web)
     agentMode: "current", // on | off | current (ChatGPT Agent mode toggle)
     thinkingTime: "extended", // light | standard | extended | heavy (ChatGPT Thinking/Pro models)
+    researchMode: "off", // off | deep (ChatGPT Deep Research; browser only)
     manualLogin: false, // set true to reuse a persistent automation profile and sign in once (Windows defaults to true when unset)
     manualLoginProfileDir: null, // override profile dir (or set ORACLE_BROWSER_PROFILE_DIR)
     headless: false,
@@ -79,7 +81,7 @@ CLI flags → `config.json` → environment → built-in defaults.
 - `sessionRetentionHours` controls the default value for `--retain-hours`. When unset, `ORACLE_RETAIN_HOURS` (if present) becomes the fallback, and the CLI flag still wins over both.
 - `ORACLE_MAX_FILE_SIZE_BYTES` overrides `maxFileSizeBytes` when set. Oracle validates it as a positive integer number of bytes before reading any `--file` inputs.
 - `browser.chatgptUrl` accepts either the root ChatGPT URL (`https://chatgpt.com/`) or a folder/workspace URL (e.g., `https://chatgpt.com/g/.../project`); `browser.url` remains as a legacy alias.
-- Browser automation defaults can be set under `browser.*`, including `browser.manualLogin`, `browser.manualLoginProfileDir`, `browser.agentMode` (CLI override: `--browser-agent-mode`), and `browser.thinkingTime` (CLI override: `--browser-thinking-time`). On Windows, `browser.manualLogin` defaults to `true` when omitted.
+- Browser automation defaults can be set under `browser.*`, including `browser.manualLogin`, `browser.manualLoginProfileDir`, `browser.attachRunning`, `browser.agentMode` (CLI override: `--browser-agent-mode`), `browser.thinkingTime` (CLI override: `--browser-thinking-time`), and `browser.researchMode` (CLI override: `--browser-research`). On Windows, `browser.manualLogin` defaults to `true` when omitted.
 
 If the config is missing or invalid, Oracle falls back to defaults and prints a warning for parse errors.
 
@@ -120,7 +122,7 @@ oracle \
 
 - `--timeout <seconds|auto>` controls the overall API deadline for a run.
 - `--http-timeout <ms|s|m|h>` overrides the HTTP client timeout for API requests (default 20m).
-- Defaults: `auto` = 60 m for `gpt-5.4-pro` (and CLI aliases that resolve to it); non-pro API models use `120s` if you don’t set a value.
+- Defaults: `auto` = 60 m for Pro models; non-pro API models use `120s` if you don’t set a value.
 - Heartbeat messages print the live remaining time so you can see when the client-side deadline will fire.
 
 ## Zombie/session staleness

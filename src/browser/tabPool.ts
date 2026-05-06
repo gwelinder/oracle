@@ -1,5 +1,4 @@
-import path from "node:path";
-import type { ChromeClient, BrowserLogger, BrowserAttachment, ResolvedBrowserConfig } from "./types.js";
+import type { ChromeClient, BrowserLogger, ResolvedBrowserConfig } from "./types.js";
 import { connectWithNewTab, closeTab } from "./chromeLifecycle.js";
 import {
   navigateToChatGPT,
@@ -19,7 +18,6 @@ import { buildClickDispatcher } from "./actions/domEvents.js";
 import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR } from "./constants.js";
 import type { ProfileRunLock } from "./profileState.js";
 import { acquireProfileRunLock } from "./profileState.js";
-import { formatElapsed } from "../oracle/format.js";
 
 export interface BatchJob {
   slug: string;
@@ -205,9 +203,7 @@ async function runJobInTab(
           await delay(1000);
           await raceDisconnect(clearPromptComposer(Runtime, logger)).catch(() => undefined);
         }
-        await raceDisconnect(
-          ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger),
-        );
+        await raceDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger));
       }
 
       // Post-agent-mode stabilization: ChatGPT's agent-mode composer can take
@@ -226,9 +222,7 @@ async function runJobInTab(
           }
           await delay(500);
         }
-        await raceDisconnect(
-          ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger),
-        );
+        await raceDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger));
       }
 
       // Final connector dialog check right before submission
@@ -288,9 +282,7 @@ async function runJobInTab(
           await raceDisconnect(clearPromptComposer(Runtime, logger)).catch(() => undefined);
           await delay(2000);
           await dismissConnectorDialogIfPresent(Runtime, parentLogger, prefix);
-          await raceDisconnect(
-            ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger),
-          );
+          await raceDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs ?? 60_000, logger));
         } finally {
           if (profileLock) {
             await profileLock.release().catch(() => undefined);
@@ -323,7 +315,7 @@ async function runJobInTab(
       // Agent-mode file-pointer expansion
       const isFilePointer =
         answerText.trim().length < 300 &&
-        (/\{\{file[:\-]/.test(answerText) ||
+        (/{{file[:-]/.test(answerText) ||
           /attached file/i.test(answerText) ||
           /available in the attached/i.test(answerText));
       if (isFilePointer) {
@@ -345,8 +337,7 @@ async function runJobInTab(
           Runtime,
           baselineTurns ?? undefined,
         ).catch(() => null);
-        const finalText =
-          typeof finalSnapshot?.text === "string" ? finalSnapshot.text.trim() : "";
+        const finalText = typeof finalSnapshot?.text === "string" ? finalSnapshot.text.trim() : "";
         if (finalText.length > answerText.trim().length) {
           answerText = finalText;
         }

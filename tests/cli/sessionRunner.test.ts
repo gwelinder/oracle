@@ -19,6 +19,7 @@ vi.mock("../../src/oracle/multiModelRunner.ts", () => ({
 
 vi.mock("../../src/browser/sessionRunner.ts", () => ({
   runBrowserSessionExecution: vi.fn(),
+  ensureSessionArtifacts: vi.fn(async ({ existingArtifacts }) => existingArtifacts),
 }));
 
 vi.mock("../../src/browser/reattach.ts", () => ({
@@ -65,7 +66,10 @@ import {
   type MultiModelRunSummary,
 } from "../../src/oracle/multiModelRunner.ts";
 import type { OracleResponse, RunOracleResult } from "../../src/oracle.ts";
-import { runBrowserSessionExecution } from "../../src/browser/sessionRunner.ts";
+import {
+  ensureSessionArtifacts,
+  runBrowserSessionExecution,
+} from "../../src/browser/sessionRunner.ts";
 import { sendSessionNotification } from "../../src/cli/notifier.ts";
 import { getCliVersion } from "../../src/version.ts";
 import { deriveModelOutputPath } from "../../src/cli/sessionRunner.ts";
@@ -106,6 +110,10 @@ beforeEach(() => {
     }
   });
   vi.mocked(runMultiModelApiSession).mockReset();
+  vi.mocked(ensureSessionArtifacts).mockReset();
+  vi.mocked(ensureSessionArtifacts).mockImplementation(
+    async ({ existingArtifacts }) => existingArtifacts,
+  );
   vi.mocked(runMultiModelApiSession).mockResolvedValue({
     fulfilled: [],
     rejected: [],
@@ -275,7 +283,7 @@ describe("performSessionRun", () => {
     } else {
       (process.stdout as { isTTY?: boolean }).isTTY = originalTty;
     }
-  });
+  }, 15_000);
 
   test("strips OSC progress codes from stored model logs", async () => {
     const sessionMeta = {
@@ -718,6 +726,7 @@ describe("performSessionRun", () => {
       elapsedMs: 2000,
       runtime: { chromePid: 123, chromePort: 9222, userDataDir: "/tmp/profile" },
       answerText: "Answer",
+      artifacts: [{ kind: "transcript", path: "/tmp/transcript.md" }],
     });
 
     await performSessionRun({
@@ -737,7 +746,9 @@ describe("performSessionRun", () => {
     expect(finalUpdate).toMatchObject({
       status: "completed",
       browser: expect.objectContaining({ runtime: expect.objectContaining({ chromePid: 123 }) }),
+      artifacts: [{ kind: "transcript", path: "/tmp/transcript.md" }],
     });
+    expect(finalUpdate).toHaveProperty("errorMessage", undefined);
     expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
       baseSessionMeta.id,
       "gpt-5.2-pro",
@@ -933,10 +944,14 @@ describe("performSessionRun", () => {
     );
   });
 
-  test("keeps session running when assistant response times out", async () => {
+  test("marks browser capture incomplete when assistant response times out", async () => {
     const automationError = new BrowserAutomationError("assistant timed out", {
       stage: "assistant-timeout",
       runtime: { chromePort: 9222, chromeHost: "127.0.0.1", tabUrl: "https://chatgpt.com/c/demo" },
+      diagnostics: {
+        domPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.dom.json",
+        screenshotPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.png",
+      },
     });
     vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(automationError);
 
@@ -953,18 +968,37 @@ describe("performSessionRun", () => {
 
     const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
     expect(finalUpdate).toMatchObject({
-      status: "running",
-      response: { status: "running", incompleteReason: "assistant-timeout" },
+      status: "error",
+      response: { status: "incomplete", incompleteReason: "incomplete-capture" },
       browser: expect.objectContaining({ runtime: expect.objectContaining({ chromePort: 9222 }) }),
+      error: expect.objectContaining({
+        details: expect.objectContaining({
+          diagnostics: expect.objectContaining({
+            domPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.dom.json",
+            screenshotPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.png",
+          }),
+        }),
+      }),
     });
     expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
       baseSessionMeta.id,
       "gpt-5.2-pro",
-      expect.objectContaining({ status: "running" }),
+      expect.objectContaining({
+        status: "error",
+        response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+        error: expect.objectContaining({
+          details: expect.objectContaining({
+            diagnostics: expect.objectContaining({
+              domPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.dom.json",
+              screenshotPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.png",
+            }),
+          }),
+        }),
+      }),
     );
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).toContain(
-      "Assistant response timed out; keeping session running for reattach.",
+      "Assistant response timed out; marking capture incomplete for reattach.",
     );
   });
 
@@ -1031,6 +1065,10 @@ describe("performSessionRun", () => {
       answerText: "ok text",
       answerMarkdown: "ok markdown",
     });
+    vi.mocked(ensureSessionArtifacts).mockResolvedValue([
+      { kind: "transcript", path: "/tmp/transcript.md" },
+      { kind: "deep-research-report", path: "/tmp/deep-research-report.md" },
+    ]);
 
     await performSessionRun({
       sessionMeta: baseSessionMeta,
@@ -1049,9 +1087,21 @@ describe("performSessionRun", () => {
     });
 
     expect(vi.mocked(resumeBrowserSession)).toHaveBeenCalled();
+    expect(vi.mocked(ensureSessionArtifacts)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: baseSessionMeta.id,
+        prompt: baseRunOptions.prompt,
+        answerMarkdown: "ok markdown",
+        conversationUrl: "https://chatgpt.com/c/demo",
+      }),
+    );
     const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
     expect(finalUpdate).toMatchObject({
       status: "completed",
+      artifacts: [
+        { kind: "transcript", path: "/tmp/transcript.md" },
+        { kind: "deep-research-report", path: "/tmp/deep-research-report.md" },
+      ],
       response: { status: "completed" },
     });
     expect(vi.mocked(sendSessionNotification)).toHaveBeenCalled();
@@ -1093,8 +1143,8 @@ describe("performSessionRun", () => {
       expect(vi.mocked(resumeBrowserSession).mock.calls.length).toBeGreaterThanOrEqual(2);
       const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
       expect(finalUpdate).toMatchObject({
-        status: "running",
-        response: { status: "running", incompleteReason: "assistant-timeout" },
+        status: "error",
+        response: { status: "incomplete", incompleteReason: "incomplete-capture" },
       });
       const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
       expect(logLines).toContain("Auto-reattach stopped");

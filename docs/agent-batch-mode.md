@@ -12,10 +12,10 @@ Agent mode enables ChatGPT's agentic capabilities (browsing, code execution, fil
 oracle --engine browser --browser-agent-mode on -p "Research competitor pricing"
 ```
 
-| Value | Behavior |
-|---|---|
-| `on` | Enable agent mode before sending the prompt |
-| `off` | Disable agent mode |
+| Value     | Behavior                                     |
+| --------- | -------------------------------------------- |
+| `on`      | Enable agent mode before sending the prompt  |
+| `off`     | Disable agent mode                           |
 | `current` | Leave the current toggle unchanged (default) |
 
 ### Config default
@@ -24,8 +24,8 @@ oracle --engine browser --browser-agent-mode on -p "Research competitor pricing"
 // ~/.oracle/config.json
 {
   browser: {
-    agentMode: "on"
-  }
+    agentMode: "on",
+  },
 }
 ```
 
@@ -69,19 +69,21 @@ oracle --engine browser --browser-manual-login \
 ### Manifest format
 
 Each entry requires:
+
 - `slug` (string) — unique job identifier, used in `{slug}` output path substitution
 - `prompt` (string) — the prompt text
 
 Optional:
+
 - `files` (string[]) — file paths to inline into the prompt (relative to cwd)
 
 ### Flags
 
-| Flag | Default | Description |
-|---|---|---|
-| `--batch <path>` | — | Path to the JSON manifest file |
-| `--parallel <N>` | 4 | Number of concurrent browser tabs (max 8) |
-| `--write-output <template>` | — | Output path with `{slug}` substitution |
+| Flag                        | Default | Description                               |
+| --------------------------- | ------- | ----------------------------------------- |
+| `--batch <path>`            | —       | Path to the JSON manifest file            |
+| `--parallel <N>`            | 4       | Number of concurrent browser tabs (max 8) |
+| `--write-output <template>` | —       | Output path with `{slug}` substitution    |
 
 ### Behavior
 

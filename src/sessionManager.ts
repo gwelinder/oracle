@@ -3,7 +3,14 @@ import fs from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import net from "node:net";
-import type { BrowserAgentMode, BrowserModelStrategy, CookieParam } from "./browser/types.js";
+import type {
+  BrowserAgentMode,
+  BrowserArchiveMode,
+  BrowserArchiveResult,
+  BrowserModelStrategy,
+  BrowserResearchMode,
+  CookieParam,
+} from "./browser/types.js";
 import type {
   TransportFailureReason,
   AzureOptions,
@@ -20,6 +27,8 @@ export interface BrowserSessionConfig {
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
+  attachRunning?: boolean;
+  browserTabRef?: string | null;
   chatgptUrl?: string | null;
   url?: string;
   timeoutMs?: number;
@@ -33,6 +42,8 @@ export interface BrowserSessionConfig {
   reuseChromeWaitMs?: number;
   /** Max time to wait for a shared manual-login profile lock (serializes parallel runs). */
   profileLockTimeoutMs?: number;
+  /** Soft limit for concurrent ChatGPT tabs sharing one manual-login profile. */
+  maxConcurrentTabs?: number;
   /** Delay before starting periodic auto-reattach attempts after a timeout. */
   autoReattachDelayMs?: number;
   /** Interval between auto-reattach attempts (0 disables). */
@@ -58,12 +69,19 @@ export interface BrowserSessionConfig {
   manualLoginCookieSync?: boolean;
   /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
   thinkingTime?: ThinkingTimeLevel;
+  /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
+  researchMode?: BrowserResearchMode;
+  /** Archive completed ChatGPT conversations after local artifacts are saved. */
+  archiveConversations?: BrowserArchiveMode;
 }
 
 export interface BrowserRuntimeMetadata {
+  browserTransport?: "cdp";
   chromePid?: number;
   chromePort?: number;
   chromeHost?: string;
+  chromeBrowserWSEndpoint?: string;
+  chromeProfileRoot?: string;
   userDataDir?: string;
   chromeTargetId?: string;
   tabUrl?: string;
@@ -72,9 +90,36 @@ export interface BrowserRuntimeMetadata {
   controllerPid?: number;
 }
 
+export type BrowserHarvestState = "running" | "completed" | "stalled" | "detached";
+
+export interface BrowserHarvestMetadata {
+  targetId?: string;
+  url?: string;
+  conversationId?: string;
+  harvestedAt?: string;
+  assistantHash?: string;
+  state?: BrowserHarvestState;
+  stopExists?: boolean;
+  sendExists?: boolean;
+  assistantCount?: number;
+  currentModelLabel?: string;
+  lastAssistantSnippet?: string;
+}
+
 export interface BrowserMetadata {
   config?: BrowserSessionConfig;
   runtime?: BrowserRuntimeMetadata;
+  harvest?: BrowserHarvestMetadata;
+  archive?: BrowserArchiveResult;
+}
+
+export interface SessionArtifact {
+  kind: "transcript" | "deep-research-report" | "image";
+  path: string;
+  label?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  sourceUrl?: string;
 }
 
 export interface SessionResponseMetadata {
@@ -136,6 +181,7 @@ export interface StoredRunOptions {
   generateImage?: string;
   editImage?: string;
   outputPath?: string;
+  browserFollowUps?: string[];
   aspectRatio?: string;
   geminiShowThoughts?: boolean;
 }
@@ -163,6 +209,7 @@ export interface SessionMetadata {
   errorMessage?: string;
   elapsedMs?: number;
   browser?: BrowserMetadata;
+  artifacts?: SessionArtifact[];
   response?: SessionResponseMetadata;
   transport?: SessionTransportMetadata;
   error?: SessionUserErrorMetadata;
@@ -454,6 +501,7 @@ export async function initializeSession(
       generateImage: options.generateImage,
       editImage: options.editImage,
       outputPath: options.outputPath,
+      browserFollowUps: options.browserFollowUps,
       aspectRatio: options.aspectRatio,
       geminiShowThoughts: options.geminiShowThoughts,
     },

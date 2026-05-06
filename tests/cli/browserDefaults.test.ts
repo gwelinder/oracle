@@ -57,6 +57,7 @@ describe("applyBrowserDefaultsFromConfig", () => {
         timeoutMs: 120_000,
         inputTimeoutMs: 15_000,
         profileLockTimeoutMs: 90_000,
+        maxConcurrentTabs: 4,
         cookieSyncWaitMs: 4_000,
         headless: true,
         hideWindow: true,
@@ -72,6 +73,7 @@ describe("applyBrowserDefaultsFromConfig", () => {
     expect(options.browserTimeout).toBe("120000");
     expect(options.browserInputTimeout).toBe("15000");
     expect(options.browserProfileLockTimeout).toBe("90000");
+    expect(options.browserMaxConcurrentTabs).toBe("4");
     expect(options.browserCookieWait).toBe("4000");
     expect(options.browserHeadless).toBe(true);
     expect(options.browserHideWindow).toBe(true);
@@ -119,6 +121,19 @@ describe("applyBrowserDefaultsFromConfig", () => {
     expect(options.browserAgentMode).toBe("off");
   });
 
+  test("applies browser research mode when CLI flag is untouched", () => {
+    const options: BrowserDefaultsOptions = {};
+    const config: UserConfig = {
+      browser: {
+        researchMode: "deep",
+      },
+    };
+
+    applyBrowserDefaultsFromConfig(options, config, (_key) => "default");
+
+    expect(options.browserResearch).toBe("deep");
+  });
+
   test("does not override thinking time when CLI provided a value", () => {
     const options: BrowserDefaultsOptions = { browserThinkingTime: "light" };
     const config: UserConfig = {
@@ -147,6 +162,52 @@ describe("applyBrowserDefaultsFromConfig", () => {
 
     expect(options.browserManualLogin).toBe(true);
     expect(options.browserManualLoginProfileDir).toBe("/tmp/oracle-profile");
+  });
+
+  test("applies attach-running defaults from config when CLI flags are untouched", () => {
+    const options: BrowserDefaultsOptions = {};
+    const config: UserConfig = {
+      browser: {
+        attachRunning: true,
+      },
+    };
+
+    applyBrowserDefaultsFromConfig(options, config, (_key) => "default");
+
+    expect(options.browserAttachRunning).toBe(true);
+  });
+
+  test("attach-running skips conflicting launch-only defaults from config", () => {
+    const options: BrowserDefaultsOptions = { browserAttachRunning: true };
+    const config: UserConfig = {
+      browser: {
+        chromeProfile: "Default",
+        chromeCookiePath: "/tmp/cookies",
+        attachRunning: false,
+        debugPort: 9222,
+        timeoutMs: 120_000,
+        hideWindow: true,
+        keepBrowser: true,
+        manualLogin: true,
+        manualLoginProfileDir: "/tmp/oracle-profile",
+        thinkingTime: "extended",
+      },
+    };
+    const source = (key: keyof BrowserDefaultsOptions) =>
+      key === "browserAttachRunning" ? "cli" : "default";
+
+    applyBrowserDefaultsFromConfig(options, config, source);
+
+    expect(options.browserAttachRunning).toBe(true);
+    expect(options.browserChromeProfile).toBeUndefined();
+    expect(options.browserCookiePath).toBeUndefined();
+    expect(options.browserPort).toBeUndefined();
+    expect(options.browserHideWindow).toBeUndefined();
+    expect(options.browserKeepBrowser).toBeUndefined();
+    expect(options.browserManualLogin).toBeUndefined();
+    expect(options.browserManualLoginProfileDir).toBeUndefined();
+    expect(options.browserTimeout).toBe("120000");
+    expect(options.browserThinkingTime).toBe("extended");
   });
 
   test("does not override manual-login when CLI enabled it", () => {

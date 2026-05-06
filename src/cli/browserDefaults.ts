@@ -1,7 +1,12 @@
 import { normalizeChatgptUrl, CHATGPT_URL } from "../browserMode.js";
 import type { UserConfig } from "../config.js";
 import type { ThinkingTimeLevel } from "../oracle.js";
-import type { BrowserAgentMode, BrowserModelStrategy } from "../browser/types.js";
+import type {
+  BrowserAgentMode,
+  BrowserArchiveMode,
+  BrowserModelStrategy,
+  BrowserResearchMode,
+} from "../browser/types.js";
 
 export interface BrowserDefaultsOptions {
   chatgptUrl?: string;
@@ -9,12 +14,14 @@ export interface BrowserDefaultsOptions {
   browserChromeProfile?: string;
   browserChromePath?: string;
   browserCookiePath?: string;
+  browserAttachRunning?: boolean;
   browserTimeout?: string | number;
   browserInputTimeout?: string | number;
   browserRecheckDelay?: string | number;
   browserRecheckTimeout?: string | number;
   browserReuseWait?: string | number;
   browserProfileLockTimeout?: string | number;
+  browserMaxConcurrentTabs?: string | number;
   browserAutoReattachDelay?: string | number;
   browserAutoReattachInterval?: string | number;
   browserAutoReattachTimeout?: string | number;
@@ -26,6 +33,8 @@ export interface BrowserDefaultsOptions {
   browserModelStrategy?: BrowserModelStrategy;
   browserAgentMode?: BrowserAgentMode;
   browserThinkingTime?: ThinkingTimeLevel;
+  browserResearch?: BrowserResearchMode;
+  browserArchive?: BrowserArchiveMode;
   browserManualLogin?: boolean;
   browserManualLoginProfileDir?: string | null;
 }
@@ -44,6 +53,9 @@ export function applyBrowserDefaultsFromConfig(
     const source = getSource(key);
     return source === undefined || source === "default";
   };
+  const attachRunningRequested =
+    options.browserAttachRunning === true ||
+    (isUnset("browserAttachRunning") && browser.attachRunning === true);
 
   const configuredChatgptUrl = browser.chatgptUrl ?? browser.url;
   const cliChatgptSet = options.chatgptUrl !== undefined || options.browserUrl !== undefined;
@@ -51,14 +63,25 @@ export function applyBrowserDefaultsFromConfig(
     options.chatgptUrl = normalizeChatgptUrl(configuredChatgptUrl ?? "", CHATGPT_URL);
   }
 
-  if (isUnset("browserChromeProfile") && browser.chromeProfile !== undefined) {
+  if (
+    !attachRunningRequested &&
+    isUnset("browserChromeProfile") &&
+    browser.chromeProfile !== undefined
+  ) {
     options.browserChromeProfile = browser.chromeProfile ?? undefined;
   }
   if (isUnset("browserChromePath") && browser.chromePath !== undefined) {
     options.browserChromePath = browser.chromePath ?? undefined;
   }
-  if (isUnset("browserCookiePath") && browser.chromeCookiePath !== undefined) {
+  if (
+    !attachRunningRequested &&
+    isUnset("browserCookiePath") &&
+    browser.chromeCookiePath !== undefined
+  ) {
     options.browserCookiePath = browser.chromeCookiePath ?? undefined;
+  }
+  if (isUnset("browserAttachRunning") && browser.attachRunning !== undefined) {
+    options.browserAttachRunning = browser.attachRunning;
   }
   if (isUnset("browserUrl") && options.browserUrl === undefined && browser.url !== undefined) {
     options.browserUrl = browser.url;
@@ -66,7 +89,7 @@ export function applyBrowserDefaultsFromConfig(
   if (isUnset("browserTimeout") && typeof browser.timeoutMs === "number") {
     options.browserTimeout = String(browser.timeoutMs);
   }
-  if (isUnset("browserPort") && typeof browser.debugPort === "number") {
+  if (!attachRunningRequested && isUnset("browserPort") && typeof browser.debugPort === "number") {
     options.browserPort = browser.debugPort;
   }
   if (isUnset("browserInputTimeout") && typeof browser.inputTimeoutMs === "number") {
@@ -83,6 +106,9 @@ export function applyBrowserDefaultsFromConfig(
   }
   if (isUnset("browserProfileLockTimeout") && typeof browser.profileLockTimeoutMs === "number") {
     options.browserProfileLockTimeout = String(browser.profileLockTimeoutMs);
+  }
+  if (isUnset("browserMaxConcurrentTabs") && typeof browser.maxConcurrentTabs === "number") {
+    options.browserMaxConcurrentTabs = String(browser.maxConcurrentTabs);
   }
   if (isUnset("browserAutoReattachDelay") && typeof browser.autoReattachDelayMs === "number") {
     options.browserAutoReattachDelay = String(browser.autoReattachDelayMs);
@@ -102,10 +128,14 @@ export function applyBrowserDefaultsFromConfig(
   if (isUnset("browserHeadless") && browser.headless !== undefined) {
     options.browserHeadless = browser.headless;
   }
-  if (isUnset("browserHideWindow") && browser.hideWindow !== undefined) {
+  if (!attachRunningRequested && isUnset("browserHideWindow") && browser.hideWindow !== undefined) {
     options.browserHideWindow = browser.hideWindow;
   }
-  if (isUnset("browserKeepBrowser") && browser.keepBrowser !== undefined) {
+  if (
+    !attachRunningRequested &&
+    isUnset("browserKeepBrowser") &&
+    browser.keepBrowser !== undefined
+  ) {
     options.browserKeepBrowser = browser.keepBrowser;
   }
   if (isUnset("browserModelStrategy") && browser.modelStrategy !== undefined) {
@@ -117,10 +147,24 @@ export function applyBrowserDefaultsFromConfig(
   if (isUnset("browserThinkingTime") && browser.thinkingTime !== undefined) {
     options.browserThinkingTime = browser.thinkingTime;
   }
-  if (isUnset("browserManualLogin") && browser.manualLogin !== undefined) {
+  if (isUnset("browserResearch") && browser.researchMode !== undefined) {
+    options.browserResearch = browser.researchMode;
+  }
+  if (isUnset("browserArchive") && browser.archiveConversations !== undefined) {
+    options.browserArchive = browser.archiveConversations;
+  }
+  if (
+    !attachRunningRequested &&
+    isUnset("browserManualLogin") &&
+    browser.manualLogin !== undefined
+  ) {
     options.browserManualLogin = browser.manualLogin;
   }
-  if (isUnset("browserManualLoginProfileDir") && browser.manualLoginProfileDir !== undefined) {
+  if (
+    !attachRunningRequested &&
+    isUnset("browserManualLoginProfileDir") &&
+    browser.manualLoginProfileDir !== undefined
+  ) {
     options.browserManualLoginProfileDir = browser.manualLoginProfileDir;
   }
 }

@@ -147,6 +147,18 @@ describe("trimBeforeFirstAnswer", () => {
     const input = "no answer yet";
     expect(trimBeforeFirstAnswer(input)).toBe(input);
   });
+
+  test("skips stale tool-only capture when a later reattach answer exists", () => {
+    const input =
+      "Launching browser mode\n" +
+      "Answer:\n" +
+      "Called tool\n" +
+      "[reattach] captured assistant response from existing Chrome tab\n" +
+      "Answer:\n" +
+      "Recovered report";
+
+    expect(trimBeforeFirstAnswer(input)).toBe("Answer:\nRecovered report");
+  });
 });
 
 describe("attachSession rendering", () => {
@@ -455,9 +467,9 @@ describe("attachSession rendering", () => {
     readSessionMetadataMock.mockResolvedValue(multiMeta);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await attachSession("sess", { model: "claude-4.5" });
+    await attachSession("sess", { model: "claude-4.0" });
 
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Model "claude-4.5" not found'));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Model "claude-4.0" not found'));
     expect(process.exitCode).toBe(1);
     expect(sessionStoreMock.readModelLog).not.toHaveBeenCalled();
   });

@@ -8,7 +8,7 @@ and run the live API suite before shipping major transport changes.
 ## Prerequisites
 
 - macOS with Chrome installed (default profile signed in to ChatGPT Pro).
-- Node 22+ and `pnpm install` already completed.
+- Node 24+ and `pnpm install` already completed.
 - Headful display access (no `--browser-headless`).
 - When debugging, add `--browser-keep-browser` so Chrome stays open after Oracle exits, then connect with `pnpm exec tsx scripts/browser-tools.ts ...` (screenshot, eval, DOM picker, etc.).
 - Ensure no Chrome instances are force-terminated mid-run; let Oracle clean up once you’re done capturing state.
@@ -118,7 +118,7 @@ Debug note: when you have a live ChatGPT tab open under a DevTools port and need
 - Run with `--browser-allow-cookie-errors` while intentionally breaking bindings.
 - Confirm log shows `Cookie sync failed (continuing with override)` and the run proceeds headless/logged-out.
 - Remember: the browser composer now pastes only the user prompt (plus any inline file blocks). If you see the default “You are Oracle…” text or other system-prefixed content in the ChatGPT composer, something regressed in `assembleBrowserPrompt` and you should stop and file a bug.
-- Heartbeats: Browser runs do **not** emit `--heartbeat` logs today. Heartbeat settings apply to streaming API runs only; ignore heartbeat toggles when validating browser mode.
+- Heartbeats: Browser runs emit `--heartbeat` status while waiting. Long Thinking/Pro runs should show `[browser] ChatGPT thinking ...` or `[browser] Waiting for ChatGPT response ...`; the log must not include reasoning text from the side panel.
 
 ## Post-Run Validation
 
@@ -159,6 +159,21 @@ Run these four smoke tests whenever we touch browser automation:
    `pnpm run oracle -- --engine browser --model gpt-5.2 --prompt "Use the attachment to report current CPU and memory figures" --file /tmp/browser-report.txt --verbose`  
    Verify verbose logs show attachment upload and the final answer matches the file data.
 
+5. **Deep Research smoke**
+   `pnpm run oracle -- --engine browser --browser-manual-login --browser-research deep --prompt "Research one current public source about WebGPU browser support and cite it"`
+   Confirm the logs show Deep Research activation/progress and the final report includes citations or source links. Do not use connected apps or private data.
+
+6. **Multi-turn browser consult smoke**
+   `pnpm run oracle -- --engine browser --browser-manual-login --model gpt-5.5-pro --browser-thinking-time extended --prompt "Give one architectural recommendation for a tiny CLI cache." --browser-follow-up "Challenge your previous recommendation with one concrete failure mode." --browser-follow-up "Now return the final recommendation in one sentence, starting with CHECK_MULTI_TURN_OK."`
+   Confirm the output contains all captured turns, includes `CHECK_MULTI_TURN_OK`, and the saved `transcript.md` records both follow-up prompts.
+
+7. **Multi-turn value check**
+   Run the same initial prompt once without follow-ups and once with the challenge/final-decision follow-ups above. In the PR notes, record concrete differences such as extra failure modes, sharper rollback steps, or test cases. Do not claim a fixed quality percentage.
+
+8. **Auto-archive smoke**
+   `pnpm run oracle -- --engine browser --browser-manual-login --model gpt-5.5-pro --browser-thinking-time extended --browser-archive always --prompt "Reply exactly CHECK_ARCHIVE_OK."`
+   Confirm the output contains `CHECK_ARCHIVE_OK`, `oracle session <id> --render` still shows the transcript, and ChatGPT shows the conversation under archived chats rather than the active sidebar. Also confirm a default `--browser-archive auto` run with Deep Research or follow-ups is not archived.
+
 Record session IDs and outcomes in the PR description (pass/fail, notable delays). This ensures reviewers can audit real runs.
 
 ### Remote Chrome smoke test (CDP)
@@ -193,6 +208,22 @@ Run this whenever you touch CDP connection logic (remote chrome lifecycle, attac
 
 Capture the pass/fail result (include the helper’s log snippet) in your PR description alongside other manual browser tests.
 
+### Attach-running smoke test
+
+Run this whenever you touch the local attach path (`--browser-attach-running`) or the direct browser websocket bootstrap.
+
+1. Start or reuse a local signed-in Chrome with DevTools access available. If you want an explicit local endpoint, launch Chrome with `--remote-debugging-port=9222`.
+2. Run Oracle against the running browser:
+   ```bash
+   pnpm run oracle -- --engine browser \
+     --browser-attach-running \
+     --model "GPT-5.2" \
+     --prompt "Give me two short markdown bullets about browser tabs"
+   ```
+   If the browser’s remote-debugging UI shows a different local port, rerun with `--remote-chrome <host:port>` in addition to `--browser-attach-running`.
+3. Verify Oracle opens a fresh tab in the existing browser, returns the answer, and closes only that Oracle-owned tab afterward.
+4. Reattach sanity check: repeat with a very short timeout if needed, then run `oracle session <id>` and confirm Oracle can reconnect to the saved tab/conversation.
+
 ## Chrome DevTools / MCP Debugging
 
 Use this when you need to inspect the live ChatGPT composer (DOM state, markdown text, screenshots, etc.). For smaller ad‑hoc pokes, you can often rely on `pnpm tsx scripts/browser-tools.ts …` instead.
@@ -202,7 +233,7 @@ Use this when you need to inspect the live ChatGPT composer (DOM state, markdown
    ```bash
    tmux new -d -s oracle-browser \\
      "pnpm run oracle -- --engine browser --browser-keep-browser \\
-       --model 'GPT-5.4 Pro' --prompt 'Debug via DevTools.'"
+      --model 'GPT-5.5 Pro' --prompt 'Debug via DevTools.'"
    ```
 
    Keeping the run in tmux prevents your shell from blocking and ensures Chrome stays open afterward.
@@ -227,6 +258,7 @@ Use this when you need to inspect the live ChatGPT composer (DOM state, markdown
      }
      ```
    - Once the server prints `chrome-devtools-mcp exposes…`, you can list/call tools via `mcporter`.
+   - Oracle’s attach-running mode no longer depends on MCP at runtime; `mcporter` remains useful here for manual inspection only.
 
 4. **Interact & capture**
    - Use MCP tools (`click`, `evaluate_js`, `screenshot`, etc.) to debug the composer contents.
@@ -249,7 +281,7 @@ These Vitest cases hit the real OpenAI API to exercise both transports:
    pnpm vitest run tests/live/openai-live.test.ts
    ```
 2. The first two tests target the standard GPT-5 (`gpt-5.1` / `gpt-5.2`) foreground
-   streaming paths. The later background tests send `gpt-5.4-pro` and `gpt-5.2-pro`
+   streaming paths. The later background tests send `gpt-5.5-pro` and `gpt-5.2-pro`
    prompts and expect the CLI to stay in background mode until OpenAI finishes
    (up to 30 minutes).
 3. Watch the console for `Reconnected to OpenAI background response...` if

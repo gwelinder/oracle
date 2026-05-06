@@ -13,6 +13,7 @@ if (process.argv[2] === "oracle-mcp") {
 }
 import { resolveEngine, type EngineMode, defaultWaitPreference } from "../src/cli/engine.js";
 import { shouldRequirePrompt } from "../src/cli/promptRequirement.js";
+import { resolveDashPrompt } from "../src/cli/stdin.js";
 import chalk from "chalk";
 import type { SessionMetadata, SessionMode, BrowserSessionConfig } from "../src/sessionStore.js";
 import { sessionStore, pruneOldSessions } from "../src/sessionStore.js";
@@ -32,6 +33,7 @@ import { applyHelpStyling } from "../src/cli/help.js";
 import {
   collectPaths,
   collectModelList,
+  collectTextValues,
   parseFloatOption,
   parseIntOption,
   parseSearchOption,
@@ -70,6 +72,7 @@ import {
 import { isErrorLogged } from "../src/cli/errorUtils.js";
 import { handleSessionAlias, handleStatusFlag } from "../src/cli/rootAlias.js";
 import { resolveOutputPath } from "../src/cli/writeOutputPath.js";
+import { showBrowserTabsStatus } from "../src/cli/browserTabs.js";
 import { getCliVersion } from "../src/version.js";
 import { runDryRunSummary, runBrowserPreview } from "../src/cli/dryRun.js";
 import { launchTui } from "../src/cli/tui/index.js";
@@ -125,11 +128,13 @@ interface CliOptions extends OptionValues {
   browserChromeProfile?: string;
   browserChromePath?: string;
   browserCookiePath?: string;
+  browserAttachRunning?: boolean;
   chatgptUrl?: string;
   browserUrl?: string;
   browserTimeout?: string;
   browserInputTimeout?: string;
   browserProfileLockTimeout?: string;
+  browserMaxConcurrentTabs?: string;
   browserCookieWait?: string;
   browserNoCookieSync?: boolean;
   browserInlineCookiesFile?: string;
@@ -138,11 +143,14 @@ interface CliOptions extends OptionValues {
   browserHeadless?: boolean;
   browserHideWindow?: boolean;
   browserKeepBrowser?: boolean;
+  browserTab?: string;
   browserModelStrategy?: "select" | "current" | "ignore";
   browserAgentMode?: "on" | "off" | "current";
   browserManualLogin?: boolean;
   browserManualLoginProfileDir?: string;
   browserThinkingTime?: "light" | "standard" | "extended" | "heavy";
+  browserResearch?: "off" | "deep";
+  browserFollowUp?: string[];
   browserAllowCookieErrors?: boolean;
   browserAttachments?: string;
   browserInlineFiles?: boolean;
@@ -210,16 +218,20 @@ const normalizedArgv = process.argv.map((arg, index) => {
 const rawCliArgs = normalizedArgv.slice(2);
 const userCliArgs = rawCliArgs[0] === CLI_ENTRYPOINT ? rawCliArgs.slice(1) : rawCliArgs;
 const isTty = process.stdout.isTTY;
+const suppressIntro =
+  userCliArgs[0] === "bridge" &&
+  (userCliArgs[1] === "codex-config" || userCliArgs[1] === "claude-config");
 
 const program = new Command();
 let introPrinted = false;
 program.hook("preAction", () => {
+  if (suppressIntro) return;
   if (introPrinted) return;
   console.log(formatIntroLine(VERSION, { env: process.env, richTty: isTty }));
   introPrinted = true;
 });
 applyHelpStyling(program, VERSION, isTty);
-program.hook("preAction", (thisCommand) => {
+program.hook("preAction", async (thisCommand) => {
   if (thisCommand !== program) {
     return;
   }
@@ -237,6 +249,11 @@ program.hook("preAction", (thisCommand) => {
     opts.prompt = positional;
     thisCommand.setOptionValue("prompt", positional);
   }
+  const resolvedPrompt = await resolveDashPrompt(opts.prompt);
+  if (resolvedPrompt !== opts.prompt) {
+    opts.prompt = resolvedPrompt;
+    thisCommand.setOptionValue("prompt", resolvedPrompt);
+  }
   if (shouldRequirePrompt(userCliArgs, opts)) {
     console.log(
       chalk.yellow('Prompt is required. Provide it via --prompt "<text>" or positional [prompt].'),
@@ -249,7 +266,7 @@ program.hook("preAction", (thisCommand) => {
 program
   .name("oracle")
   .description(
-    "One-shot GPT-5.4 Pro / GPT-5.4 / GPT-5.1 Codex tool for hard questions that benefit from large file context and server-side search.",
+    "One-shot GPT-5.5 Pro / GPT-5.5 / GPT-5.1 Codex tool for hard questions that benefit from large file context and server-side search.",
   )
   .version(VERSION)
   .argument("[prompt]", "Prompt text (shorthand for --prompt).")
@@ -303,13 +320,13 @@ program
   .option("-s, --slug <words>", "Custom session slug (3-5 words).")
   .option(
     "-m, --model <model>",
-    'Model to target (gpt-5.4-pro default). Also gpt-5.4, gpt-5.1-pro, gpt-5-pro, gpt-5.1, gpt-5.1-codex API-only, gpt-5.2, gpt-5.2-instant, gpt-5.2-pro, gemini-3.1-pro API-only, gemini-3-pro, claude-4.5-sonnet, claude-4.1-opus, or ChatGPT labels like "5.2 Thinking" for browser runs).',
+    'Model to target (gpt-5.5-pro default). Also gpt-5.5, gpt-5.4-pro, gpt-5.4, gpt-5.1-pro, gpt-5-pro, gpt-5.1, gpt-5.1-codex API-only, gpt-5.2, gpt-5.2-instant, gpt-5.2-pro, gemini-3.1-pro API-only, gemini-3-pro, claude-4.6-sonnet, claude-4.1-opus, or ChatGPT labels like "5.5 Pro" / "5.2 Thinking" for browser runs).',
     normalizeModelOption,
   )
   .addOption(
     new Option(
       "--models <models>",
-      'Comma-separated API model list to query in parallel (e.g., "gpt-5.4-pro,gemini-3-pro").',
+      'Comma-separated API model list to query in parallel (e.g., "gpt-5.5-pro,gemini-3-pro").',
     )
       .argParser(collectModelList)
       .default([]),
@@ -347,7 +364,7 @@ program
   .addOption(
     new Option(
       "--timeout <seconds|auto>",
-      "Overall timeout before aborting the API call (auto = 60m for gpt-5.4-pro, 120s otherwise).",
+      "Overall timeout before aborting the API call (auto = 60m for Pro models, 120s otherwise).",
     )
       .argParser(parseTimeoutOption)
       .default("auto"),
@@ -465,6 +482,12 @@ program
   )
   .addOption(
     new Option(
+      "--browser-attach-running",
+      "Attach to a running local browser session instead of launching Chrome (defaults to 127.0.0.1:9222; combine with --remote-chrome to hint a different host:port).",
+    ),
+  )
+  .addOption(
+    new Option(
       "--chatgpt-url <url>",
       `Override the ChatGPT web URL (e.g., workspace/folder like https://chatgpt.com/g/.../project; default ${CHATGPT_URL}).`,
     ),
@@ -509,6 +532,12 @@ program
     new Option(
       "--browser-profile-lock-timeout <ms|s|m|h>",
       "Wait for the shared manual-login profile lock before sending (serializes parallel runs).",
+    ).hideHelp(),
+  )
+  .addOption(
+    new Option(
+      "--browser-max-concurrent-tabs <n>",
+      "Soft limit for concurrent ChatGPT tabs sharing one manual-login profile (default 3).",
     ).hideHelp(),
   )
   .addOption(
@@ -603,6 +632,26 @@ program
   )
   .addOption(
     new Option(
+      "--browser-research <mode>",
+      "Browser research mode: deep activates ChatGPT Deep Research.",
+    ).choices(["off", "deep"]),
+  )
+  .addOption(
+    new Option(
+      "--browser-archive <mode>",
+      "Archive completed ChatGPT browser conversations after local artifacts are saved (auto archives successful non-project one-shots only).",
+    ).choices(["auto", "always", "never"]),
+  )
+  .addOption(
+    new Option(
+      "--browser-follow-up <prompt>",
+      "Submit an additional prompt in the same ChatGPT browser conversation after the initial answer; repeat for multi-turn consults.",
+    )
+      .argParser(collectTextValues)
+      .default([]),
+  )
+  .addOption(
+    new Option(
       "--browser-allow-cookie-errors",
       "Continue even if Chrome cookies cannot be copied.",
     ).hideHelp(),
@@ -618,8 +667,12 @@ program
   .addOption(
     new Option(
       "--remote-chrome <host:port>",
-      "Connect to remote Chrome DevTools Protocol (e.g., 192.168.1.10:9222 or [2001:db8::1]:9222 for IPv6).",
+      "Connect to remote Chrome DevTools Protocol, or when combined with --browser-attach-running use this host:port as the local attach hint.",
     ),
+  )
+  .option(
+    "--browser-tab <ref>",
+    "Reuse an existing ChatGPT tab by ref (current, target id, full URL, or title substring) instead of opening a new tab.",
   )
   .addOption(
     new Option(
@@ -651,21 +704,16 @@ program
   .addOption(
     new Option(
       "--generate-image <file>",
-      "Generate image and save to file (Gemini web/cookie mode only; requires gemini.google.com Chrome cookies).",
+      "Generate image and save to file (Gemini browser mode; ChatGPT browser mode saves downloadable image artifacts when present).",
     ),
   )
   .addOption(
     new Option(
       "--edit-image <file>",
-      "Edit existing image (use with --output, Gemini web/cookie mode only).",
+      "Edit existing image (Gemini browser mode; for ChatGPT attach source images with --file and use --generate-image for output).",
     ),
   )
-  .addOption(
-    new Option(
-      "--output <file>",
-      "Output file path for image operations (Gemini web/cookie mode only).",
-    ),
-  )
+  .addOption(new Option("--output <file>", "Output file path for image operations."))
   .addOption(
     new Option(
       "--aspect <ratio>",
@@ -823,6 +871,16 @@ bridgeCommand
   .command("claude-config")
   .description("Print a Claude Code MCP config snippet (.mcp.json) for oracle-mcp.")
   .option("--print-token", "Include ORACLE_REMOTE_TOKEN in the snippet.", false)
+  .option(
+    "--local-browser",
+    "Use a local signed-in Chrome profile instead of a remote bridge.",
+    false,
+  )
+  .option("--oracle-home-dir <path>", "Override ORACLE_HOME_DIR in the generated snippet.")
+  .option(
+    "--browser-profile-dir <path>",
+    "Override ORACLE_BROWSER_PROFILE_DIR in the generated snippet.",
+  )
   .action(async (commandOptions) => {
     const { runBridgeClaudeConfig } = await import("../src/cli/bridge/claudeConfig.js");
     await runBridgeClaudeConfig(commandOptions);
@@ -858,6 +916,24 @@ program
   .option("--render-markdown", "Alias for --render.", false)
   .option("--model <name>", "Filter sessions/output for a specific model.", "")
   .option("--path", "Print the stored session paths instead of attaching.", false)
+  .option(
+    "--harvest",
+    "Re-read the bound browser tab and print/save the latest assistant output.",
+    false,
+  )
+  .option(
+    "--live",
+    "Tail the live browser tab for this session until it completes, stalls, or detaches.",
+    false,
+  )
+  .option(
+    "--write-output <path>",
+    "Write harvested browser output to this file (requires --harvest or --live).",
+  )
+  .option(
+    "--browser-tab <ref>",
+    "Override the browser tab ref used for harvesting/live tail (current, target id, URL, or title substring).",
+  )
   .addOption(new Option("--clean", "Deprecated alias for --clear.").default(false).hideHelp())
   .action(async (sessionId, _options: StatusOptions, cmd: Command) => {
     await handleSessionCommand(sessionId, cmd);
@@ -876,9 +952,25 @@ program
   .option("--render-markdown", "Alias for --render.", false)
   .option("--model <name>", "Filter sessions/output for a specific model.", "")
   .option("--hide-prompt", "Hide stored prompt when displaying a session.", false)
+  .option(
+    "--browser-tabs",
+    "List live ChatGPT browser tabs and known Oracle session linkage.",
+    false,
+  )
   .addOption(new Option("--clean", "Deprecated alias for --clear.").default(false).hideHelp())
   .action(async (sessionId: string | undefined, _options: StatusOptions, command: Command) => {
     const statusOptions = command.opts<StatusOptions>();
+    if (statusOptions.browserTabs) {
+      if (sessionId) {
+        console.error(
+          "Cannot combine a session ID with --browser-tabs. Remove the ID to inspect live browser tabs.",
+        );
+        process.exitCode = 1;
+        return;
+      }
+      await showBrowserTabsStatus();
+      return;
+    }
     const clearRequested = Boolean(statusOptions.clear || statusOptions.clean);
     if (clearRequested) {
       if (sessionId) {
@@ -986,6 +1078,9 @@ function buildRunOptions(
       "auto",
     browserInlineFiles: overrides.browserInlineFiles ?? options.browserInlineFiles ?? false,
     browserBundleFiles: overrides.browserBundleFiles ?? options.browserBundleFiles ?? false,
+    generateImage: overrides.generateImage ?? options.generateImage,
+    outputPath: overrides.outputPath ?? options.output,
+    browserFollowUps: overrides.browserFollowUps ?? options.browserFollowUp ?? [],
     background: overrides.background ?? undefined,
     renderPlain: overrides.renderPlain ?? options.renderPlain ?? false,
     writeOutputPath: overrides.writeOutputPath ?? options.writeOutputPath,
@@ -1211,6 +1306,7 @@ function buildRunOptionsFromMetadata(metadata: SessionMetadata): RunOracleOption
     browserAttachments: stored.browserAttachments,
     browserInlineFiles: stored.browserInlineFiles,
     browserBundleFiles: stored.browserBundleFiles,
+    browserFollowUps: stored.browserFollowUps,
     background: stored.background,
     renderPlain: stored.renderPlain,
     writeOutputPath: stored.writeOutputPath,
@@ -1357,6 +1453,9 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   if (remoteHost && options.remoteChrome) {
     throw new Error("--remote-host cannot be combined with --remote-chrome.");
   }
+  if (options.browserTab && engine !== "browser") {
+    throw new Error("--browser-tab requires --engine browser.");
+  }
 
   if (optionUsesDefault("azureEndpoint")) {
     if (process.env.AZURE_OPENAI_ENDPOINT) {
@@ -1434,6 +1533,11 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   if (engine === "browser" && includesGeminiApiOnly) {
     console.log(chalk.dim("gemini-3.1-pro is API-only today; switching to API."));
     engine = "api";
+  }
+  const browserFollowUpCount =
+    options.browserFollowUp?.filter((entry) => entry.trim().length > 0).length ?? 0;
+  if (engine !== "browser" && browserFollowUpCount > 0) {
+    throw new Error("--browser-follow-up requires --engine browser.");
   }
   const effectiveModelId = resolvedModel.startsWith("gemini")
     ? resolveGeminiModelId(resolvedModel)
@@ -1529,6 +1633,22 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     return;
   }
 
+  const getSource = (key: keyof CliOptions) =>
+    program.getOptionValueSource?.(key as string) ?? undefined;
+  applyBrowserDefaultsFromConfig(options, userConfig, getSource);
+
+  const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
+  const browserModelLabelOverride =
+    sessionMode === "browser" ? resolveBrowserModelLabel(cliModelArg, resolvedModel) : undefined;
+  const browserConfig =
+    sessionMode === "browser"
+      ? await buildBrowserConfig({
+          ...options,
+          model: resolvedModel,
+          browserModelLabel: browserModelLabelOverride,
+        })
+      : undefined;
+
   if (previewMode) {
     if (!options.prompt) {
       throw new Error("Prompt is required when using --dry-run/preview.");
@@ -1565,6 +1685,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
           version: VERSION,
           previewMode,
           log: console.log,
+          browserConfig,
         },
         {},
       );
@@ -1623,6 +1744,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
 
   const duplicateBlocked = await shouldBlockDuplicatePrompt({
     prompt: resolvedOptions.prompt,
+    browserFollowUps: resolvedOptions.browserFollowUp,
     force: options.force,
     sessionStore,
     log: console.log,
@@ -1645,28 +1767,12 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     }
   }
 
-  const getSource = (key: keyof CliOptions) =>
-    program.getOptionValueSource?.(key as string) ?? undefined;
-  applyBrowserDefaultsFromConfig(options, userConfig, getSource);
-
   const notifications = resolveNotificationSettings({
     cliNotify: options.notify,
     cliNotifySound: options.notifySound,
     env: process.env,
     config: userConfig.notify,
   });
-
-  const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
-  const browserModelLabelOverride =
-    sessionMode === "browser" ? resolveBrowserModelLabel(cliModelArg, resolvedModel) : undefined;
-  const browserConfig =
-    sessionMode === "browser"
-      ? await buildBrowserConfig({
-          ...options,
-          model: resolvedModel,
-          browserModelLabel: browserModelLabelOverride,
-        })
-      : undefined;
 
   let browserDeps: BrowserSessionRunnerDeps | undefined;
   if (browserConfig && remoteHost) {
@@ -1695,7 +1801,9 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   // ---- Batch mode: run multiple agent jobs in parallel tabs ----
   if (options.batch) {
     if (sessionMode !== "browser") {
-      throw new Error("--batch requires --engine browser (agent mode runs use browser automation).");
+      throw new Error(
+        "--batch requires --engine browser (agent mode runs use browser automation).",
+      );
     }
     if (!browserConfig) {
       throw new Error("--batch requires browser configuration.");
@@ -1709,11 +1817,9 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     }
 
     const { runBatch } = await import("../src/cli/batchRunner.js");
-    const { runBrowserMode } = await import("../src/browserMode.js");
     const { resolveBrowserConfig } = await import("../src/browser/config.js");
-    const { maybeReuseRunningChromeForTest: maybeReuseRunningChrome } = await import(
-      "../src/browser/index.js"
-    );
+    const { maybeReuseRunningChromeForTest: maybeReuseRunningChrome } =
+      await import("../src/browser/index.js");
     const os = await import("node:os");
     const fsMod = await import("node:fs/promises");
     const pathMod = await import("node:path");
@@ -1754,9 +1860,8 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       chromeHost = (chrome as unknown as { host?: string }).host ?? "127.0.0.1";
       console.log(chalk.dim(`Launched Chrome (port ${chromePort})`));
 
-      const { writeDevToolsActivePort, writeChromePid } = await import(
-        "../src/browser/profileState.js"
-      );
+      const { writeDevToolsActivePort, writeChromePid } =
+        await import("../src/browser/profileState.js");
       await writeDevToolsActivePort(manualProfileDir, chromePort);
       if (chromePid) await writeChromePid(manualProfileDir, chromePid);
     }
@@ -2204,6 +2309,10 @@ function printDebugHelp(cliName: string): void {
     ["--browser-chrome-profile <name>", "Reuse cookies from a specific Chrome profile."],
     ["--browser-chrome-path <path>", "Point to a custom Chrome/Chromium binary."],
     ["--browser-cookie-path <path>", "Use a specific Chrome/Chromium cookie store file."],
+    [
+      "--browser-attach-running",
+      "Attach to your current Chrome session through its local remote debugging toggle.",
+    ],
     ["--browser-url <url>", "Alias for --chatgpt-url."],
     ["--browser-timeout <ms|s|m>", "Cap total wait time for the assistant response."],
     ["--browser-input-timeout <ms|s|m>", "Cap how long we wait for the composer textarea."],

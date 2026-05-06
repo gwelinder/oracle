@@ -1,12 +1,15 @@
 import type CDP from "chrome-remote-interface";
 import type Protocol from "devtools-protocol";
 import type { BrowserRuntimeMetadata } from "../sessionStore.js";
+import type { SessionArtifact } from "../sessionStore.js";
 import type { ThinkingTimeLevel } from "../oracle/types.js";
 
 export type ChromeClient = Awaited<ReturnType<typeof CDP>>;
 export type CookieParam = Protocol.Network.CookieParam;
 export type BrowserModelStrategy = "select" | "current" | "ignore";
 export type BrowserAgentMode = "on" | "off" | "current";
+export type BrowserResearchMode = "off" | "deep";
+export type BrowserArchiveMode = "auto" | "always" | "never";
 
 export type BrowserLogger = ((message: string) => void) & {
   verbose?: boolean;
@@ -19,10 +22,30 @@ export interface BrowserAttachment {
   sizeBytes?: number;
 }
 
+export interface BrowserGeneratedImage {
+  url: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+  fileId?: string;
+}
+
+export interface SavedBrowserImage extends SessionArtifact {
+  kind: "image";
+  url: string;
+  finalUrl?: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+  fileId?: string;
+}
+
 export interface BrowserAutomationConfig {
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
+  attachRunning?: boolean;
+  browserTabRef?: string | null;
   url?: string;
   chatgptUrl?: string | null;
   timeoutMs?: number;
@@ -36,6 +59,8 @@ export interface BrowserAutomationConfig {
   reuseChromeWaitMs?: number;
   /** Max time to wait for a shared manual-login profile lock (serializes parallel runs). */
   profileLockTimeoutMs?: number;
+  /** Soft limit for concurrent ChatGPT tabs sharing one manual-login profile. */
+  maxConcurrentTabs?: number;
   /** Delay before starting periodic auto-reattach attempts after a timeout. */
   autoReattachDelayMs?: number;
   /** Interval between auto-reattach attempts (0 disables). */
@@ -56,11 +81,17 @@ export interface BrowserAutomationConfig {
   debug?: boolean;
   allowCookieErrors?: boolean;
   remoteChrome?: { host: string; port: number } | null;
+  remoteChromeBrowserWSEndpoint?: string | null;
+  remoteChromeProfileRoot?: string | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;
   /** Thinking time intensity level for Thinking/Pro models: light, standard, extended, heavy */
   thinkingTime?: ThinkingTimeLevel;
+  /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
+  researchMode?: BrowserResearchMode;
+  /** Archive completed ChatGPT conversations after local artifacts are saved. */
+  archiveConversations?: BrowserArchiveMode;
 }
 
 export interface BrowserRunOptions {
@@ -75,23 +106,48 @@ export interface BrowserRunOptions {
   log?: BrowserLogger;
   heartbeatIntervalMs?: number;
   verbose?: boolean;
+  /** Session id used for cross-process browser slot diagnostics. */
+  sessionId?: string;
+  /** Browser-only image generation output path. */
+  generateImagePath?: string;
+  /** Optional output path for image operations. */
+  outputPath?: string;
+  /** Additional prompts to submit in the same browser conversation after the initial answer. */
+  followUpPrompts?: string[];
   /** Optional hook to persist runtime info (port/url/target) as soon as Chrome is ready. */
   runtimeHintCb?: (hint: BrowserRuntimeMetadata) => void | Promise<void>;
+}
+
+export interface BrowserArchiveResult {
+  mode: BrowserArchiveMode;
+  attempted: boolean;
+  archived: boolean;
+  reason?: string;
+  conversationUrl?: string;
+  error?: string;
 }
 
 export interface BrowserRunResult {
   answerText: string;
   answerMarkdown: string;
   answerHtml?: string;
+  artifacts?: SessionArtifact[];
+  generatedImages?: BrowserGeneratedImage[];
+  savedImages?: SavedBrowserImage[];
+  archive?: BrowserArchiveResult;
   tookMs: number;
   answerTokens: number;
   answerChars: number;
+  browserTransport?: "cdp";
   chromePid?: number;
   chromePort?: number;
   chromeHost?: string;
+  chromeBrowserWSEndpoint?: string;
+  chromeProfileRoot?: string;
   userDataDir?: string;
   chromeTargetId?: string;
   tabUrl?: string;
+  conversationId?: string;
   controllerPid?: number;
 }
 
@@ -103,14 +159,20 @@ export type ResolvedBrowserConfig = Required<
     | "chromeCookiePath"
     | "desiredModel"
     | "remoteChrome"
+    | "remoteChromeBrowserWSEndpoint"
+    | "remoteChromeProfileRoot"
     | "thinkingTime"
     | "modelStrategy"
     | "agentMode"
+    | "maxConcurrentTabs"
+    | "researchMode"
   >
 > & {
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
+  attachRunning?: boolean;
+  browserTabRef?: string | null;
   desiredModel?: string | null;
   modelStrategy?: BrowserModelStrategy;
   agentMode?: BrowserAgentMode;
@@ -118,7 +180,12 @@ export type ResolvedBrowserConfig = Required<
   debugPort?: number | null;
   inlineCookiesSource?: string | null;
   remoteChrome?: { host: string; port: number } | null;
+  remoteChromeBrowserWSEndpoint?: string | null;
+  remoteChromeProfileRoot?: string | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;
+  maxConcurrentTabs: number;
+  researchMode: BrowserResearchMode;
+  archiveConversations: BrowserArchiveMode;
 };

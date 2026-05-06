@@ -1,7 +1,25 @@
 import { describe, expect, test, vi } from "vitest";
-import { __test__ as promptComposer } from "../../src/browser/actions/promptComposer.js";
+import {
+  __test__ as promptComposer,
+  clearPromptComposer,
+} from "../../src/browser/actions/promptComposer.js";
 
 describe("promptComposer", () => {
+  test("fails composer clearing when stale text remains", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: { cleared: true, remaining: ["old draft"] } },
+      }),
+    } as unknown as {
+      evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
+    };
+    const logger = Object.assign(vi.fn(), { verbose: false });
+
+    await expect(clearPromptComposer(runtime as never, logger as never)).rejects.toThrow(
+      /Failed to clear prompt composer/,
+    );
+  });
+
   test("does not treat cleared composer + stop button as committed without a new turn", async () => {
     vi.useFakeTimers();
     try {
@@ -71,5 +89,32 @@ describe("promptComposer", () => {
     await expect(
       promptComposer.verifyPromptCommitted(runtime as never, "hello", 150),
     ).resolves.toBe(1);
+  });
+
+  test("attachment sends time out instead of allowing Enter fallback", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = {
+        evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+          if (expression.includes("dispatchClickSequence")) {
+            return { result: { value: "disabled" } };
+          }
+          return { result: { value: true } };
+        }),
+      } as unknown as {
+        evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
+      };
+
+      const promise = promptComposer.attemptSendButton(
+        runtime as never,
+        (() => undefined) as never,
+        ["oracle-attach-verify.txt"],
+      );
+      const assertion = expect(promise).rejects.toThrow(/clickable send button/i);
+      await vi.advanceTimersByTimeAsync(21_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

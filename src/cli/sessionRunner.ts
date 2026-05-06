@@ -6,6 +6,7 @@ import type {
   SessionMode,
   BrowserSessionConfig,
   BrowserRuntimeMetadata,
+  SessionArtifact,
 } from "../sessionStore.js";
 import type { RunOracleOptions, UsageSummary } from "../oracle.js";
 import {
@@ -17,6 +18,7 @@ import {
   extractTextOutput,
 } from "../oracle.js";
 import {
+  ensureSessionArtifacts,
   runBrowserSessionExecution,
   type BrowserSessionRunnerDeps,
 } from "../browser/sessionRunner.js";
@@ -111,7 +113,12 @@ export async function performSessionRun({
         },
       };
       const result = await runBrowserSessionExecution(
-        { runOptions, browserConfig, cwd, log },
+        {
+          runOptions: { ...runOptions, sessionId: runOptions.sessionId ?? sessionMeta.id },
+          browserConfig,
+          cwd,
+          log,
+        },
         runnerDeps,
       );
       if (modelForStatus) {
@@ -126,10 +133,13 @@ export async function performSessionRun({
         completedAt: new Date().toISOString(),
         usage: result.usage,
         elapsedMs: result.elapsedMs,
+        errorMessage: undefined,
         browser: {
           config: browserConfig,
           runtime: result.runtime,
+          archive: result.archive,
         },
+        artifacts: mergeArtifacts(sessionMeta.artifacts, result.artifacts),
         response: undefined,
         transport: undefined,
         error: undefined,
@@ -330,6 +340,7 @@ export async function performSessionRun({
         completedAt: new Date().toISOString(),
         usage: aggregateUsage,
         elapsedMs: summary.elapsedMs,
+        errorMessage: undefined,
         response: undefined,
         transport: undefined,
         error: undefined,
@@ -395,6 +406,7 @@ export async function performSessionRun({
       completedAt: new Date().toISOString(),
       usage: result.usage,
       elapsedMs: result.elapsedMs,
+      errorMessage: undefined,
       response: extractResponseMetadata(result.response),
       transport: undefined,
       error: undefined,
@@ -460,22 +472,34 @@ export async function performSessionRun({
     if (assistantTimeout && mode === "browser") {
       const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
         ?.runtime;
-      log(dim("Assistant response timed out; keeping session running for reattach."));
+      log(dim("Assistant response timed out; marking capture incomplete for reattach."));
       if (modelForStatus) {
         await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
-          status: "running",
-          completedAt: undefined,
+          status: "error",
+          completedAt: new Date().toISOString(),
+          response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+          error: {
+            category: userError.category,
+            message: userError.message,
+            details: userError.details,
+          },
         });
       }
       await sessionStore.updateSession(sessionMeta.id, {
-        status: "running",
+        status: "error",
+        completedAt: new Date().toISOString(),
         errorMessage: message,
         mode,
         browser: {
           config: browserConfig,
           runtime: runtime ?? sessionMeta.browser?.runtime,
         },
-        response: { status: "running", incompleteReason: "assistant-timeout" },
+        response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+        error: {
+          category: userError.category,
+          message: userError.message,
+          details: userError.details,
+        },
       });
       const autoReattachIntervalMs = browserConfig?.autoReattachIntervalMs ?? 0;
       if (autoReattachIntervalMs > 0) {
@@ -552,6 +576,21 @@ export async function performSessionRun({
     }
     throw error;
   }
+}
+
+function mergeArtifacts(
+  existing: SessionArtifact[] | undefined,
+  additions: SessionArtifact[] | undefined,
+): SessionArtifact[] | undefined {
+  const merged = new Map<string, SessionArtifact>();
+  for (const artifact of existing ?? []) {
+    merged.set(`${artifact.kind}:${artifact.path}`, artifact);
+  }
+  for (const artifact of additions ?? []) {
+    merged.set(`${artifact.kind}:${artifact.path}`, artifact);
+  }
+  const values = Array.from(merged.values());
+  return values.length > 0 ? values : undefined;
 }
 
 function formatError(error: unknown): string {
@@ -682,6 +721,15 @@ async function autoReattachUntilComplete({
       });
       const answerText = result.answerMarkdown || result.answerText || "";
       const outputTokens = estimateTokenCount(answerText);
+      const artifacts = await ensureSessionArtifacts({
+        sessionId: sessionMeta.id,
+        prompt: runOptions.prompt,
+        answerMarkdown: answerText,
+        conversationUrl: runtime.tabUrl,
+        browserConfig,
+        existingArtifacts: sessionMeta.artifacts,
+        logger,
+      });
       const logWriter = sessionStore.createLogWriter(sessionMeta.id);
       logWriter.logLine(`[auto-reattach] captured assistant response on attempt ${attempt}`);
       logWriter.logLine("Answer:");
@@ -708,10 +756,12 @@ async function autoReattachUntilComplete({
           reasoningTokens: 0,
           totalTokens: outputTokens,
         },
+        errorMessage: undefined,
         browser: {
           config: browserConfig,
           runtime,
         },
+        artifacts: mergeArtifacts(sessionMeta.artifacts, artifacts),
         response: { status: "completed" },
         error: undefined,
         transport: undefined,

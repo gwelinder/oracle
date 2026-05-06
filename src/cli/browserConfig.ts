@@ -11,7 +11,12 @@ import {
   parseDuration,
 } from "../browserMode.js";
 import { normalizeBrowserModelStrategy } from "../browser/modelStrategy.js";
-import type { BrowserAgentMode, BrowserModelStrategy } from "../browser/types.js";
+import type {
+  BrowserAgentMode,
+  BrowserArchiveMode,
+  BrowserModelStrategy,
+  BrowserResearchMode,
+} from "../browser/types.js";
 import type { CookieParam } from "../browser/types.js";
 import { getOracleHomeDir } from "../oracleHome.js";
 
@@ -24,8 +29,11 @@ const DEFAULT_CHROME_PROFILE = "Default";
 // Ordered array: most specific models first to ensure correct selection.
 // The browser label is passed to the model picker which fuzzy-matches against ChatGPT's UI.
 const BROWSER_MODEL_LABELS: [ModelName, string][] = [
-  // ChatGPT UI as of March 2026: Latest, Instant, Thinking, Pro, Configure...
-  // No version numbers shown — just bare labels.
+  // ChatGPT UI often exposes bare labels (Latest, Instant, Thinking, Pro) while
+  // upstream model names move forward. Keep the mapping semantic and let the
+  // picker matcher validate version/pro signals when the UI exposes them.
+  ["gpt-5.5-pro", "Pro"],
+  ["gpt-5.5", "Thinking"],
   ["gpt-5.4-pro", "Pro"],
   ["gpt-5.2-pro", "Pro"],
   ["gpt-5.1-pro", "Pro"],
@@ -44,6 +52,8 @@ export interface BrowserFlagOptions {
   browserChromeProfile?: string;
   browserChromePath?: string;
   browserCookiePath?: string;
+  browserAttachRunning?: boolean;
+  browserTab?: string;
   chatgptUrl?: string;
   browserUrl?: string;
   browserTimeout?: string;
@@ -52,6 +62,7 @@ export interface BrowserFlagOptions {
   browserRecheckTimeout?: string;
   browserReuseWait?: string;
   browserProfileLockTimeout?: string;
+  browserMaxConcurrentTabs?: string;
   browserAutoReattachDelay?: string;
   browserAutoReattachInterval?: string;
   browserAutoReattachTimeout?: string;
@@ -67,6 +78,8 @@ export interface BrowserFlagOptions {
   browserManualLoginProfileDir?: string | null;
   /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
   browserThinkingTime?: ThinkingTimeLevel;
+  browserResearch?: BrowserResearchMode;
+  browserArchive?: BrowserArchiveMode;
   browserModelLabel?: string;
   browserModelStrategy?: BrowserModelStrategy;
   browserAgentMode?: BrowserAgentMode;
@@ -84,13 +97,18 @@ export function normalizeChatGptModelForBrowser(model: ModelName): ModelName {
     return model;
   }
 
-  if (normalized === "gpt-5.4-pro" || normalized === "gpt-5.4") {
+  if (
+    normalized === "gpt-5.5-pro" ||
+    normalized === "gpt-5.5" ||
+    normalized === "gpt-5.4-pro" ||
+    normalized === "gpt-5.4"
+  ) {
     return normalized;
   }
 
   // Pro variants: resolve to the latest Pro model in ChatGPT.
   if (normalized === "gpt-5-pro" || normalized === "gpt-5.1-pro" || normalized === "gpt-5.2-pro") {
-    return "gpt-5.4-pro";
+    return "gpt-5.5-pro";
   }
 
   // Explicit model variants: keep as-is (they have their own browser labels)
@@ -135,6 +153,11 @@ export async function buildBrowserConfig(
   if (options.remoteChrome) {
     remoteChrome = parseRemoteChromeTarget(options.remoteChrome);
   }
+  const attachRunning = options.browserAttachRunning === true;
+  validateAttachRunningOptions(options, {
+    attachRunning,
+    hasInlineCookies: Boolean(inline?.cookies),
+  });
   const rawUrl = options.chatgptUrl ?? options.browserUrl;
   const url = rawUrl ? normalizeChatgptUrl(rawUrl, CHATGPT_URL) : undefined;
 
@@ -160,6 +183,7 @@ export async function buildBrowserConfig(
     chromeProfile: options.browserChromeProfile ?? DEFAULT_CHROME_PROFILE,
     chromePath: options.browserChromePath ?? null,
     chromeCookiePath: options.browserCookiePath ?? null,
+    attachRunning,
     url,
     debugPort: selectBrowserPort(options),
     timeoutMs: options.browserTimeout
@@ -180,6 +204,7 @@ export async function buildBrowserConfig(
     profileLockTimeoutMs: options.browserProfileLockTimeout
       ? parseDuration(options.browserProfileLockTimeout, 0)
       : undefined,
+    maxConcurrentTabs: parseMaxConcurrentTabs(options.browserMaxConcurrentTabs),
     autoReattachDelayMs: options.browserAutoReattachDelay
       ? parseDuration(options.browserAutoReattachDelay, 0)
       : undefined,
@@ -208,8 +233,45 @@ export async function buildBrowserConfig(
     // Allow cookie failures by default so runs can continue without Chrome/Keychain secrets.
     allowCookieErrors: options.browserAllowCookieErrors ?? true,
     remoteChrome,
+    browserTabRef: options.browserTab ?? undefined,
     thinkingTime: options.browserThinkingTime,
+    researchMode: options.browserResearch === "deep" ? "deep" : "off",
+    archiveConversations: options.browserArchive,
   };
+}
+
+function validateAttachRunningOptions(
+  options: BrowserFlagOptions,
+  {
+    attachRunning,
+    hasInlineCookies,
+  }: {
+    attachRunning: boolean;
+    hasInlineCookies: boolean;
+  },
+): void {
+  if (!attachRunning) {
+    return;
+  }
+  const conflicts = [
+    options.browserChromeProfile ? "--browser-chrome-profile" : null,
+    options.browserCookiePath ? "--browser-cookie-path" : null,
+    options.browserNoCookieSync ? "--browser-no-cookie-sync" : null,
+    options.browserHideWindow ? "--browser-hide-window" : null,
+    options.browserKeepBrowser ? "--browser-keep-browser" : null,
+    options.browserManualLogin ? "--browser-manual-login" : null,
+    options.browserManualLoginProfileDir ? "--browser-manual-login-profile-dir" : null,
+    hasInlineCookies ? "--browser-inline-cookies/--browser-inline-cookies-file" : null,
+    options.browserPort != null || options.browserDebugPort != null
+      ? "--browser-port/--browser-debug-port"
+      : null,
+  ].filter((value): value is string => Boolean(value));
+
+  if (conflicts.length > 0) {
+    throw new Error(
+      `--browser-attach-running cannot be combined with ${conflicts.join(", ")} because attach mode reuses an already-running browser instead of launching and configuring its own Chrome instance.`,
+    );
+  }
 }
 
 function selectBrowserPort(options: BrowserFlagOptions): number | null {
@@ -219,6 +281,15 @@ function selectBrowserPort(options: BrowserFlagOptions): number | null {
     throw new Error(`Invalid browser port: ${candidate}. Expected a number between 1 and 65535.`);
   }
   return candidate;
+}
+
+function parseMaxConcurrentTabs(raw?: string): number | undefined {
+  if (!raw) return undefined;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Invalid browser max concurrent tabs: ${raw}. Expected a positive integer.`);
+  }
+  return Math.trunc(value);
 }
 
 export function mapModelToBrowserLabel(model: ModelName): string {

@@ -21,14 +21,23 @@ async function readSessionLogTail(sessionId: string, maxBytes: number): Promise<
   }
 }
 import { performSessionRun } from "../../cli/sessionRunner.js";
+import { runDryRunSummary } from "../../cli/dryRun.js";
 import { CHATGPT_URL } from "../../browser/constants.js";
-import { consultInputSchema } from "../types.js";
+import { CONSULT_PRESETS, consultInputSchema } from "../types.js";
+import { applyConsultPreset } from "../consultPresets.js";
 import { loadUserConfig, type UserConfig } from "../../config.js";
 import { resolveNotificationSettings } from "../../cli/notifier.js";
 import { mapModelToBrowserLabel, resolveBrowserModelLabel } from "../../cli/browserConfig.js";
+import type { BrowserModelStrategy } from "../../browser/types.js";
 
 // Use raw shapes so the MCP SDK (with its bundled Zod) wraps them and emits valid JSON Schema.
 const consultInputShape = {
+  preset: z
+    .enum(CONSULT_PRESETS)
+    .optional()
+    .describe(
+      'Optional MCP convenience preset. "chatgpt-pro-heavy" selects ChatGPT browser mode, the current Pro model alias, and Pro Extended thinking unless overridden.',
+    ),
   prompt: z.string().min(1, "Prompt is required.").describe("User prompt to run."),
   files: z
     .array(z.string())
@@ -40,7 +49,7 @@ const consultInputShape = {
     .string()
     .optional()
     .describe(
-      "Single model name/label. Prefer setting `engine` explicitly to avoid default surprises.",
+      "Single model name/label. If `engine` is omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then `api` when OPENAI_API_KEY is set, otherwise `browser`. Prefer setting `engine` explicitly to avoid default surprises.",
     ),
   models: z
     .array(z.string())
@@ -50,7 +59,7 @@ const consultInputShape = {
     .enum(["api", "browser"])
     .optional()
     .describe(
-      "Execution engine. `api` uses OpenAI/other providers. `browser` automates the ChatGPT web UI (supports attachments and ChatGPT-only model labels).",
+      "Execution engine. `api` uses OpenAI/other providers. `browser` automates the ChatGPT web UI (supports attachments and ChatGPT-only model labels). When omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then `api` when OPENAI_API_KEY is set, otherwise `browser`.",
     ),
   browserModelLabel: z
     .string()
@@ -72,10 +81,38 @@ const consultInputShape = {
     .enum(["light", "standard", "extended", "heavy"])
     .optional()
     .describe("Browser-only: set ChatGPT thinking time when supported by the chosen model."),
+  browserModelStrategy: z
+    .enum(["select", "current", "ignore"])
+    .optional()
+    .describe(
+      "Browser-only: model picker strategy. Mirrors the CLI --browser-model-strategy flag.",
+    ),
+  browserResearchMode: z
+    .enum(["deep"])
+    .optional()
+    .describe("Browser-only: activate ChatGPT Deep Research mode for broad web research."),
+  browserArchive: z
+    .enum(["auto", "always", "never"])
+    .optional()
+    .describe(
+      'Browser-only: archive completed ChatGPT conversations after local artifacts are saved. "auto" archives successful non-project one-shots only.',
+    ),
+  browserFollowUps: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Browser-only: additional prompts to submit sequentially in the same ChatGPT conversation after the initial answer.",
+    ),
   browserKeepBrowser: z
     .boolean()
     .optional()
     .describe("Browser-only: keep Chrome running after completion (useful for debugging)."),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe(
+      "Preview the resolved Oracle run without creating a session or touching the browser.",
+    ),
   search: z
     .boolean()
     .optional()
@@ -116,14 +153,40 @@ const consultModelSummaryShape = z.object({
   logPath: z.string().optional(),
 });
 
+const consultDryRunResolvedShape = z.object({
+  resolvedEngine: z.enum(["api", "browser"]),
+  model: z.string(),
+  models: z.array(z.string()).optional(),
+  files: z.array(z.string()),
+  followUpCount: z.number(),
+  browser: z
+    .object({
+      desiredModel: z.string().nullable().optional(),
+      thinkingTime: z.string().nullable().optional(),
+      modelStrategy: z.string().nullable().optional(),
+      researchMode: z.string().nullable().optional(),
+      attachments: z.string().optional(),
+      bundleFiles: z.boolean().optional(),
+      keepBrowser: z.boolean().optional(),
+      manualLogin: z.boolean().optional(),
+      profileDir: z.string().nullable().optional(),
+      chatgptUrl: z.string().nullable().optional(),
+    })
+    .optional(),
+  guidance: z.array(z.string()),
+});
+
 const consultOutputShape = {
-  sessionId: z.string(),
+  sessionId: z.string().optional(),
   status: z.string(),
   output: z.string(),
+  dryRun: z.boolean().optional(),
+  resolved: consultDryRunResolvedShape.optional(),
   models: z.array(consultModelSummaryShape).optional(),
 } satisfies z.ZodRawShape;
 
 export type ConsultModelSummary = z.infer<typeof consultModelSummaryShape>;
+export type ConsultDryRunResolved = z.infer<typeof consultDryRunResolvedShape>;
 
 export function summarizeModelRunsForConsult(
   runs?: SessionModelRun[] | null,
@@ -165,6 +228,9 @@ export function buildConsultBrowserConfig({
   inputModel,
   browserModelLabel,
   browserThinkingTime,
+  browserModelStrategy,
+  browserResearchMode,
+  browserArchive,
   browserKeepBrowser,
 }: {
   userConfig: UserConfig;
@@ -173,6 +239,9 @@ export function buildConsultBrowserConfig({
   inputModel?: string;
   browserModelLabel?: string;
   browserThinkingTime?: "light" | "standard" | "extended" | "heavy";
+  browserModelStrategy?: BrowserModelStrategy;
+  browserResearchMode?: "deep";
+  browserArchive?: "auto" | "always" | "never";
   browserKeepBrowser?: boolean;
 }): BrowserSessionConfig {
   const configuredBrowser = userConfig.browser ?? {};
@@ -199,8 +268,108 @@ export function buildConsultBrowserConfig({
       ? ((envProfileDir || configuredBrowser.manualLoginProfileDir) ?? null)
       : null,
     thinkingTime: browserThinkingTime ?? configuredBrowser.thinkingTime,
+    modelStrategy: browserModelStrategy ?? configuredBrowser.modelStrategy,
+    researchMode: browserResearchMode ?? configuredBrowser.researchMode,
+    archiveConversations: browserArchive ?? configuredBrowser.archiveConversations,
     desiredModel: desiredModelLabel || mapModelToBrowserLabel(runModel),
   };
+}
+
+export function buildConsultDryRunResolved({
+  resolvedEngine,
+  runOptions,
+  browserConfig,
+}: {
+  resolvedEngine: "api" | "browser";
+  runOptions: ReturnType<typeof mapConsultToRunOptions>["runOptions"];
+  browserConfig?: BrowserSessionConfig;
+}): ConsultDryRunResolved {
+  const guidance: string[] = [];
+  const followUpCount = runOptions.browserFollowUps?.filter((entry) => entry.trim()).length ?? 0;
+  if (resolvedEngine === "api") {
+    guidance.push(
+      'API engine requires provider credentials. If the operator has ChatGPT Pro but no API key, retry with engine:"browser" or preset:"chatgpt-pro-heavy".',
+    );
+  }
+  if (resolvedEngine === "browser") {
+    guidance.push(
+      "Browser engine uses the signed-in ChatGPT profile; run dryRun:true before live use.",
+    );
+  }
+  const desiredModel = browserConfig?.desiredModel ?? null;
+  const thinkingTime = browserConfig?.thinkingTime ?? null;
+  if (runOptions.model === "gpt-5.5-pro" && thinkingTime === "heavy") {
+    guidance.push(
+      'gpt-5.5-pro should normally use Pro Extended. Use model:"gpt-5.5" with browserThinkingTime:"heavy" only when you explicitly want Thinking Heavy.',
+    );
+  }
+  const chatgptUrl = browserConfig?.chatgptUrl ?? browserConfig?.url ?? null;
+  if (chatgptUrl?.includes("/project")) {
+    guidance.push(
+      "This ChatGPT project URL is persistent. Project Sources should be mutated only by the project_sources tool with confirmMutation:true.",
+    );
+  }
+  if (followUpCount > 0) {
+    guidance.push(
+      "This is a multi-turn browser consult; all follow-ups stay in one ChatGPT conversation.",
+    );
+  }
+  return {
+    resolvedEngine,
+    model: runOptions.model,
+    models: runOptions.models,
+    files: runOptions.file ?? [],
+    followUpCount,
+    browser:
+      resolvedEngine === "browser"
+        ? {
+            desiredModel,
+            thinkingTime,
+            modelStrategy: browserConfig?.modelStrategy ?? null,
+            researchMode: browserConfig?.researchMode ?? null,
+            attachments: runOptions.browserAttachments,
+            bundleFiles: runOptions.browserBundleFiles,
+            keepBrowser: browserConfig?.keepBrowser,
+            manualLogin: browserConfig?.manualLogin,
+            profileDir: browserConfig?.manualLoginProfileDir ?? null,
+            chatgptUrl,
+          }
+        : undefined,
+    guidance,
+  };
+}
+
+export function formatConsultDryRunResolved(details: ConsultDryRunResolved): string[] {
+  const lines = [
+    "[dry-run] MCP resolved request:",
+    `  engine: ${details.resolvedEngine}`,
+    `  model: ${details.model}`,
+  ];
+  if (details.models && details.models.length > 0) {
+    lines.push(`  models: ${details.models.join(", ")}`);
+  }
+  lines.push(`  files: ${details.files.length}`);
+  if (details.browser) {
+    lines.push(`  browser desired model: ${details.browser.desiredModel ?? "(default)"}`);
+    lines.push(`  browser thinking time: ${details.browser.thinkingTime ?? "(default)"}`);
+    lines.push(`  browser model strategy: ${details.browser.modelStrategy ?? "(default)"}`);
+    lines.push(`  browser research mode: ${details.browser.researchMode ?? "off"}`);
+    lines.push(`  browser attachments: ${details.browser.attachments ?? "auto"}`);
+    lines.push(`  browser bundle files: ${details.browser.bundleFiles ? "yes" : "no"}`);
+    lines.push(`  browser keep browser: ${details.browser.keepBrowser ? "yes" : "no"}`);
+    lines.push(`  browser manual login: ${details.browser.manualLogin ? "yes" : "no"}`);
+    if (details.browser.profileDir) {
+      lines.push(`  browser profile: ${details.browser.profileDir}`);
+    }
+    if (details.browser.chatgptUrl) {
+      lines.push(`  ChatGPT URL: ${details.browser.chatgptUrl}`);
+    }
+  }
+  lines.push(`  follow-ups: ${details.followUpCount}`);
+  for (const guidance of details.guidance) {
+    lines.push(`  guidance: ${guidance}`);
+  }
+  return lines;
 }
 
 export function registerConsultTool(server: McpServer): void {
@@ -209,13 +378,22 @@ export function registerConsultTool(server: McpServer): void {
     {
       title: "Run an oracle session",
       description:
-        'Run a one-shot Oracle session (API or ChatGPT browser automation). Use `files` to attach project context. For browser-based image/file uploads, set `browserAttachments:"always"`. Sessions are stored under `ORACLE_HOME_DIR` (shared with the CLI).',
+        'Run an Oracle session (API or ChatGPT browser automation). Use `files` to attach project context. If `engine` is omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then API when OPENAI_API_KEY is set, otherwise browser. Browser GPT-5.5 Pro consults can take many minutes; use `dryRun:true` first when configuring an agent and inspect `sessions`/`oracle status` before retrying. For browser-based image/file uploads, set `browserAttachments:"always"`. Browser consults can include `browserFollowUps` for a multi-turn ChatGPT review in one conversation. Sessions are stored under `ORACLE_HOME_DIR` (shared with the CLI).',
       // Cast to any to satisfy SDK typings across differing Zod versions.
       inputSchema: consultInputShape,
       outputSchema: consultOutputShape,
     },
     async (input: unknown) => {
       const textContent = (text: string) => [{ type: "text" as const, text }];
+      let parsedInput;
+      try {
+        parsedInput = applyConsultPreset(consultInputSchema.parse(input));
+      } catch (error) {
+        return {
+          isError: true,
+          content: textContent(error instanceof Error ? error.message : String(error)),
+        };
+      }
       const {
         prompt,
         files,
@@ -227,9 +405,14 @@ export function registerConsultTool(server: McpServer): void {
         browserAttachments,
         browserBundleFiles,
         browserThinkingTime,
+        browserModelStrategy,
+        browserResearchMode,
+        browserArchive,
+        browserFollowUps,
         browserKeepBrowser,
+        dryRun,
         slug,
-      } = consultInputSchema.parse(input);
+      } = parsedInput;
       const { config: userConfig } = await loadUserConfig();
       const { runOptions, resolvedEngine } = mapConsultToRunOptions({
         prompt,
@@ -240,12 +423,73 @@ export function registerConsultTool(server: McpServer): void {
         search,
         browserAttachments,
         browserBundleFiles,
+        browserFollowUps,
         userConfig,
         env: process.env,
       });
       const cwd = process.cwd();
+      const sendLog = (text: string, level: "info" | "debug" = "info") =>
+        server.server
+          .sendLoggingMessage(
+            LoggingMessageNotificationParamsSchema.parse({
+              level,
+              data: { text, bytes: Buffer.byteLength(text, "utf8") },
+            }),
+          )
+          .catch(() => {});
 
       const resolvedRemote = resolveRemoteServiceConfig({ userConfig, env: process.env });
+
+      let browserConfig: BrowserSessionConfig | undefined;
+      if (resolvedEngine === "browser") {
+        browserConfig = buildConsultBrowserConfig({
+          userConfig,
+          env: process.env,
+          runModel: runOptions.model,
+          inputModel: model,
+          browserModelLabel,
+          browserThinkingTime,
+          browserModelStrategy,
+          browserResearchMode,
+          browserArchive,
+          browserKeepBrowser,
+        });
+      }
+
+      if (dryRun) {
+        const lines: string[] = [];
+        const log = (line: string): void => {
+          lines.push(line);
+          sendLog(line);
+        };
+        const resolved = buildConsultDryRunResolved({
+          resolvedEngine,
+          runOptions,
+          browserConfig,
+        });
+        await runDryRunSummary({
+          engine: resolvedEngine,
+          runOptions,
+          cwd,
+          version: getCliVersion(),
+          log,
+          browserConfig,
+        });
+        for (const line of formatConsultDryRunResolved(resolved)) {
+          log(line);
+        }
+        const output = lines.join("\n").trim();
+        return {
+          content: textContent(output),
+          structuredContent: {
+            status: "dry-run",
+            output,
+            dryRun: true,
+            resolved,
+          },
+        };
+      }
+
       const browserGuard = ensureBrowserAvailable(resolvedEngine, {
         remoteHost: resolvedRemote.host,
       });
@@ -274,19 +518,6 @@ export function registerConsultTool(server: McpServer): void {
         };
       }
 
-      let browserConfig: BrowserSessionConfig | undefined;
-      if (resolvedEngine === "browser") {
-        browserConfig = buildConsultBrowserConfig({
-          userConfig,
-          env: process.env,
-          runModel: runOptions.model,
-          inputModel: model,
-          browserModelLabel,
-          browserThinkingTime,
-          browserKeepBrowser,
-        });
-      }
-
       const notifications = resolveNotificationSettings({
         cliNotify: undefined,
         cliNotifySound: undefined,
@@ -307,17 +538,6 @@ export function registerConsultTool(server: McpServer): void {
       );
 
       const logWriter = sessionStore.createLogWriter(sessionMeta.id);
-      // Best-effort: emit MCP logging notifications for live chunks but never block the run.
-      const sendLog = (text: string, level: "info" | "debug" = "info") =>
-        server.server
-          .sendLoggingMessage(
-            LoggingMessageNotificationParamsSchema.parse({
-              level,
-              data: { text, bytes: Buffer.byteLength(text, "utf8") },
-            }),
-          )
-          .catch(() => {});
-
       // Stream logs to both the session log and MCP logging notifications, but avoid buffering in memory
       const log = (line?: string): void => {
         logWriter.logLine(line);

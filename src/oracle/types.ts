@@ -1,6 +1,8 @@
 export type TokenizerFn = (input: unknown, options?: Record<string, unknown>) => number;
 
 export type KnownModelName =
+  | "gpt-5.5"
+  | "gpt-5.5-pro"
   | "gpt-5.4"
   | "gpt-5.4-pro"
   | "gpt-5.1-pro"
@@ -12,7 +14,7 @@ export type KnownModelName =
   | "gpt-5.2-pro"
   | "gemini-3.1-pro"
   | "gemini-3-pro"
-  | "claude-4.5-sonnet"
+  | "claude-4.6-sonnet"
   | "claude-4.1-opus"
   | "grok-4.1";
 
@@ -20,11 +22,12 @@ export type KnownModelName =
 export type ModelName = KnownModelName | (string & {});
 
 export type ProModelName =
+  | "gpt-5.5-pro"
   | "gpt-5.4-pro"
   | "gpt-5.1-pro"
   | "gpt-5-pro"
   | "gpt-5.2-pro"
-  | "claude-4.5-sonnet"
+  | "claude-4.6-sonnet"
   | "claude-4.1-opus";
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
@@ -163,6 +166,15 @@ export interface RunOracleOptions {
   browserAttachments?: "auto" | "never" | "always";
   browserInlineFiles?: boolean;
   browserBundleFiles?: boolean;
+  /** Browser image generation output path. */
+  generateImage?: string;
+  /** Optional output path used by browser image operations. */
+  outputPath?: string;
+  /**
+   * Browser-only: submit these prompts sequentially after the initial answer in
+   * the same ChatGPT conversation.
+   */
+  browserFollowUps?: string[];
   background?: boolean;
   /** Optional absolute path to save only the assistant's final text output. */
   writeOutputPath?: string;

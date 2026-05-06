@@ -14,6 +14,7 @@ export {
   uploadAttachmentFile,
   waitForAttachmentCompletion,
   waitForUserTurnAttachments,
+  buildUserTurnAttachmentExpressionForTest,
 } from "./actions/attachments.js";
 export {
   waitForAssistantResponse,
@@ -21,6 +22,7 @@ export {
   captureAssistantMarkdown,
   extractExpandedAssistantText,
   buildAssistantExtractorForTest,
+  buildAssistantSnapshotExpressionForTest,
   buildConversationDebugExpressionForTest,
   buildMarkdownFallbackExtractorForTest,
   buildCopyExpressionForTest,

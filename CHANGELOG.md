@@ -1,6 +1,63 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — Unreleased
+
+### Added
+
+- Browser: add `--browser-attach-running` to reuse a local already-running signed-in Chrome through Chrome's local remote-debugging toggle. Oracle opens a dedicated tab, stores attach metadata for reattach, and leaves the browser itself untouched. (#119) — thanks @dedene.
+- Browser: coordinate concurrent ChatGPT browser runs that share one manual-login profile with a tab lease registry, `--browser-max-concurrent-tabs`, stale lease cleanup, and shared Chrome discovery. (#150) — thanks @pdurlej.
+- Browser: add `--browser-research deep` / MCP `browserResearchMode: "deep"` for ChatGPT Deep Research browser runs, including progress monitoring, reattach recovery, and iframe report capture. (#151) — thanks @pdurlej.
+- Browser: save durable browser session artifacts, including transcripts, Deep Research reports, and ChatGPT-generated image files when downloadable image URLs are present. (#169) — thanks @pdurlej.
+- Browser: add repeatable `--browser-follow-up` prompts and MCP `browserFollowUps` for multi-turn ChatGPT browser consults in one conversation. (#170) — thanks @pdurlej.
+- Browser: add live ChatGPT tab inspection, `oracle status --browser-tabs`, browser session harvest/live-tail commands, and `--browser-tab <ref>` to reuse an existing ChatGPT tab by current tab, target id, URL, or title substring. (#126) — thanks @NathanSkene.
+- Browser: add `--browser-archive` / MCP `browserArchive` to archive successful one-shot ChatGPT browser runs after local artifacts are saved. (#178) — thanks @pdurlej.
+- Browser: print a browser control plan before ChatGPT runs and dry-runs, and clean up leftover blank tabs after completed manual-profile runs. (#179) — thanks @pdurlej.
+- Browser: document multi-turn consult guardrails and make browser dry-runs explicit that Oracle only sends caller-provided follow-up prompts. (#180) — thanks @pdurlej.
+- MCP: add the `chatgpt-pro-heavy` consult preset, MCP dry-runs, browser model strategy passthrough, and `oracle bridge claude-config --local-browser` for Claude Code + local ChatGPT Pro browser consults. (#149) — thanks @pdurlej.
+
+### Docs
+
+- Browser: document the new attach-running workflow and add a manual smoke test for the direct attach path.
+- Website: add the generated askoracle.dev docs site, social preview asset, and GitHub Pages deployment workflow.
+
+### Changed
+
+- Browser: emit `--heartbeat` status while waiting for ChatGPT browser responses, including safe Thinking/Reasoning sidecar liveness metadata without logging reasoning text. (#148) — thanks @pdurlej.
+
+### Fixed
+
+- Bridge: keep generated Codex/Claude MCP config snippets clean on stdout so redirecting `oracle bridge claude-config --local-browser > .mcp.json` produces valid JSON.
+- Browser/MCP: harden ChatGPT Pro browser consults with louder GPT-5.5 Pro selection validation, resolved MCP dry-run details, assistant-timeout diagnostics, incomplete-capture reattach metadata, and clean Pro Extended live-run metadata. (#177) — thanks @pdurlej.
+- Browser: clear stale ChatGPT composer drafts before initial browser submissions and ignore model-picker thinking-effort controls while scanning model rows. (#176) — thanks @oirehT.
+- MCP: clarify `consult` engine defaults and add ChatGPT browser-mode recovery guidance to missing GPT API-key errors. (#172) — thanks @pdurlej.
+
+## 0.10.0 — 2026-05-04
+
+### Changed
+
+- OpenAI: switch the default model to `gpt-5.5-pro`, add explicit `gpt-5.5` support, and roll older Pro CLI aliases (`gpt-5.1-pro`, `gpt-5.2-pro`) forward to the current Pro API target.
+- Browser: target ChatGPT `GPT-5.5 Pro` by default for Pro browser runs and recognize current GPT-5.5 picker labels such as `Pro Extended` and `Thinking Heavy`.
+- Dependencies: update the npm dependency set.
+
+### Fixed
+
+- Gemini web: prefer the latest non-empty streaming response chunk so `gemini-3-pro` and `gemini-3.1-pro` browser runs do not report `(no text output)` when the first chunk is an empty placeholder. (#153, #154) — thanks @manhtruong03.
+- Browser: keep ChatGPT cookie sync to the minimal auth/Cloudflare set by default, preventing oversized request headers from breaking browser runs after login.
+- Browser: recover missing project/workspace URLs by resetting the tab before falling back to the base ChatGPT URL.
+- Browser: recognize uploaded attachments from current ChatGPT file-chip labels, wait for a clickable send button, and continue when ChatGPT omits sent-message attachment UI after upload has already completed.
+- Browser: reattach completed Pro sessions by anchoring response capture to the matching prompt turn instead of filtering out already-visible answers.
+- CLI: avoid loading `clipboardy` during startup and add `/usr/sbin` before lazy clipboard loading on Intel macOS, preventing `spawnSync sysctl ENOENT` crashes from transitive architecture detection. (#129)
+- Browser: track ChatGPT's composer rewrite by matching the new `__composer-pill` model button and selecting thinking effort from the model menu's per-row effort control, with bilingual label matching and old-chip fallback. (#146) — thanks @SyntaxSmith.
+- Browser: open isolated local browser tabs directly on the configured ChatGPT URL instead of starting at `about:blank` and navigating later. (#139) — thanks @betamod.
+- MCP: prevent the stdio server from auto-starting a second time when imported by an `oracle-mcp` bin shim. (#137) — thanks @SyntaxSmith.
+- Gemini web: honor resolved manual-login browser profile directories when launching Gemini browser sessions. (#124) — thanks @blackopsrepl.
+- Browser: avoid Linux hidden-home temp dirs for ephemeral Chrome profiles and redact inline cookie values in low-level debug config logs. (#136) — thanks @lodekeeper.
+- Browser: fail attachment submissions before send instead of falling back to Enter after upload/send-readiness timeouts. (#115, #116) — thanks @HeMuling.
+- Browser: stabilize localized ChatGPT model selection when the header stays generic by waiting on composer-footer model state changes. (#118) — thanks @dedene.
+- CLI: accept `-p -` / `--prompt -` to read the prompt from stdin. (#117) — thanks @frankekn.
+- Browser: preserve prompt-too-large fallback recovery after a dead-composer retry. (#117) — thanks @frankekn.
+- Browser: guard assistant response capture against stale turns from a different ChatGPT conversation. (#117) — thanks @frankekn.
+- Browser: verify sent attachments against the expected user turn instead of stale earlier turns. (#117) — thanks @frankekn.
 
 ### Added
 

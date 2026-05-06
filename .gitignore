@@ -15,6 +15,7 @@ oracle-*.tgz
 oracle-*.tgz.sha1
 oracle-*.tgz.sha256
 /.claude
+/.cx/
 
 # Local working files - not for public git
 clickup-debug/

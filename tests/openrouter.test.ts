@@ -55,6 +55,22 @@ describe("OpenRouter helpers", () => {
     expect(isOpenRouterBaseUrl("https://openrouter.ai/api/v1/responses")).toBe(true);
   });
 
+  it("preserves FAL.ai provider-qualified ids for OpenRouter routing", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [] }),
+    }) as unknown as typeof fetch;
+
+    const config = await resolveModelConfig("fal-ai/imagen4/preview", {
+      openRouterApiKey: "dummy",
+      fetcher,
+    });
+
+    expect(config.apiModel).toBe("fal-ai/imagen4/preview");
+    expect(config.openRouterId).toBe("fal-ai/imagen4/preview");
+  });
+
   it("detects OpenRouter base URLs", () => {
     expect(isOpenRouterBaseUrl("https://openrouter.ai/api/v1/responses")).toBe(true);
     expect(isOpenRouterBaseUrl("https://api.openai.com")).toBe(false);

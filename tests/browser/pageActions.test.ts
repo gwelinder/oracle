@@ -124,7 +124,8 @@ describe("navigateToPromptReadyWithFallback", () => {
       "https://chatgpt.com/g/missing/project",
       logger,
     );
-    expect(navigate).toHaveBeenNthCalledWith(2, page, runtime, "https://chatgpt.com/", logger);
+    expect(navigate).toHaveBeenNthCalledWith(2, page, runtime, "about:blank", logger);
+    expect(navigate).toHaveBeenNthCalledWith(3, page, runtime, "https://chatgpt.com/", logger);
     expect(ensureNotBlockedMock).toHaveBeenCalledTimes(2);
     expect(ensurePromptReadyMock).toHaveBeenNthCalledWith(1, runtime, 5_000, logger);
     expect(ensurePromptReadyMock).toHaveBeenNthCalledWith(2, runtime, 120_000, logger);
@@ -223,6 +224,43 @@ describe("ensureLoggedIn", () => {
     await expect(ensureLoggedIn(runtime, logger, { remoteSession: true })).rejects.toThrow(
       /remote Chrome session/i,
     );
+  });
+
+  test("rejects unknown backend status instead of assuming login", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            ok: false,
+            status: 0,
+            url: "/backend-api/me",
+            domLoginCta: false,
+            onAuthPage: false,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    await expect(ensureLoggedIn(runtime, logger, { appliedCookies: 2 })).rejects.toThrow(
+      /ChatGPT session not detected/i,
+    );
+  });
+
+  test("treats welcome-back navigation during account click as login progress", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: { value: { ok: false, status: 401, url: "/backend-api/me" } },
+        })
+        .mockRejectedValueOnce(new Error("Inspected target navigated or closed"))
+        .mockResolvedValueOnce({
+          result: { value: { ok: true, status: 200, url: "/backend-api/me" } },
+        }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(ensureLoggedIn(runtime, logger, { appliedCookies: 2 })).resolves.toBeUndefined();
+    expect(logger).toHaveBeenCalledWith("Welcome back account click triggered navigation.");
+    expect(logger).toHaveBeenCalledWith("Login restored via Welcome back account picker");
   });
 });
 

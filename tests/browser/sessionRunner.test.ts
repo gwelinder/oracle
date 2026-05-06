@@ -22,13 +22,16 @@ describe("runBrowserSessionExecution", () => {
         chromeHost: "127.0.0.1",
         chromeTargetId: "t-1",
         tabUrl: "https://chatgpt.com/c/foo",
+        conversationId: "foo",
       });
       return {
         answerText: "ok",
         answerMarkdown: "ok",
+        artifacts: [{ kind: "transcript" as const, path: "/tmp/transcript.md" }],
         tookMs: 1000,
         answerTokens: 12,
         answerChars: 20,
+        conversationId: "foo",
       };
     });
     const result = await runBrowserSessionExecution(
@@ -60,11 +63,168 @@ describe("runBrowserSessionExecution", () => {
       reasoningTokens: 0,
       totalTokens: 54,
     });
-    expect(result.runtime).toMatchObject({ chromePid: undefined });
+    expect(result.runtime).toMatchObject({ chromePid: undefined, conversationId: "foo" });
+    expect(result.artifacts).toEqual([{ kind: "transcript", path: "/tmp/transcript.md" }]);
     expect(persistRuntimeHint).toHaveBeenCalledWith(
       expect.objectContaining({ chromePort: 9999, chromeHost: "127.0.0.1", chromeTargetId: "t-1" }),
     );
     expect(log).toHaveBeenCalled();
+  });
+
+  test("passes ChatGPT image output paths into the browser runner", async () => {
+    const executeBrowser = vi.fn(async () => ({
+      answerText: "ok",
+      answerMarkdown: "ok",
+      artifacts: [{ kind: "transcript" as const, path: "/tmp/transcript.md" }],
+      tookMs: 1000,
+      answerTokens: 1,
+      answerChars: 2,
+    }));
+
+    await runBrowserSessionExecution(
+      {
+        runOptions: {
+          ...baseRunOptions,
+          sessionId: "image-session",
+          generateImage: "/tmp/generated.png",
+          outputPath: "/tmp/output.png",
+        },
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log: vi.fn(),
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 5,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser,
+      },
+    );
+
+    expect(executeBrowser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "image-session",
+        generateImagePath: "/tmp/generated.png",
+        outputPath: "/tmp/output.png",
+      }),
+    );
+  });
+
+  test("passes browser follow-up prompts into the browser runner", async () => {
+    const executeBrowser = vi.fn(async () => ({
+      answerText: "ok",
+      answerMarkdown: "ok",
+      tookMs: 1000,
+      answerTokens: 1,
+      answerChars: 2,
+    }));
+
+    await runBrowserSessionExecution(
+      {
+        runOptions: {
+          ...baseRunOptions,
+          browserFollowUps: ["challenge the recommendation", "summarize the final decision"],
+        },
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log: vi.fn(),
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 5,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser,
+      },
+    );
+
+    expect(executeBrowser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        followUpPrompts: ["challenge the recommendation", "summarize the final decision"],
+      }),
+    );
+  });
+
+  test("persists attach-mode runtime metadata from the browser runner", async () => {
+    const log = vi.fn();
+    const persistRuntimeHint = vi.fn();
+    const executeBrowser = vi.fn(async (options) => {
+      await options.runtimeHintCb?.({
+        browserTransport: "cdp" as const,
+        chromeBrowserWSEndpoint: "ws://127.0.0.1:9222/devtools/browser/abc",
+        chromeProfileRoot: "/Users/peter/Library/Application Support/Google/Chrome",
+        chromeTargetId: "target-2",
+        tabUrl: "https://chatgpt.com/c/attached",
+      });
+      return {
+        answerText: "ok",
+        answerMarkdown: "ok",
+        tookMs: 100,
+        answerTokens: 2,
+        answerChars: 2,
+        browserTransport: "cdp" as const,
+        chromeBrowserWSEndpoint: "ws://127.0.0.1:9222/devtools/browser/abc",
+        chromeProfileRoot: "/Users/peter/Library/Application Support/Google/Chrome",
+        chromeTargetId: "target-2",
+        tabUrl: "https://chatgpt.com/c/attached",
+      };
+    });
+
+    const result = await runBrowserSessionExecution(
+      {
+        runOptions: baseRunOptions,
+        browserConfig: { attachRunning: true },
+        cwd: "/repo",
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 10,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser,
+        persistRuntimeHint,
+      },
+    );
+
+    expect(persistRuntimeHint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        browserTransport: "cdp",
+        chromeBrowserWSEndpoint: "ws://127.0.0.1:9222/devtools/browser/abc",
+        chromeProfileRoot: "/Users/peter/Library/Application Support/Google/Chrome",
+        chromeTargetId: "target-2",
+        tabUrl: "https://chatgpt.com/c/attached",
+      }),
+    );
+    expect(result.runtime).toMatchObject({
+      browserTransport: "cdp",
+      chromeBrowserWSEndpoint: "ws://127.0.0.1:9222/devtools/browser/abc",
+      chromeProfileRoot: "/Users/peter/Library/Application Support/Google/Chrome",
+      chromeTargetId: "target-2",
+      tabUrl: "https://chatgpt.com/c/attached",
+    });
   });
 
   test("suppresses automation noise when not verbose", async () => {
@@ -147,6 +307,172 @@ describe("runBrowserSessionExecution", () => {
     expect(
       log.mock.calls.some((call) => String(call[0]).includes("Inline prompt too large; retrying")),
     ).toBe(true);
+  });
+
+  test("prints browser thinking heartbeat logs even when not verbose", async () => {
+    const log = vi.fn();
+    await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, verbose: false },
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 5,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: async ({ log: automationLog }) => {
+          automationLog?.("[browser] ChatGPT thinking - 30s elapsed; status=planning");
+          return {
+            answerText: "text",
+            answerMarkdown: "markdown",
+            tookMs: 1,
+            answerTokens: 1,
+            answerChars: 4,
+          };
+        },
+      },
+    );
+    expect(log.mock.calls.some((call) => String(call[0]).includes("ChatGPT thinking"))).toBe(true);
+  });
+
+  test("prints browser follow-up progress logs even when not verbose", async () => {
+    const log = vi.fn();
+    await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, verbose: false },
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 5,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: async ({ log: automationLog }) => {
+          automationLog?.("[browser] Sending follow-up 1/1");
+          return {
+            answerText: "text",
+            answerMarkdown: "markdown",
+            tookMs: 1,
+            answerTokens: 1,
+            answerChars: 4,
+          };
+        },
+      },
+    );
+    expect(log.mock.calls.some((call) => String(call[0]).includes("Sending follow-up"))).toBe(true);
+  });
+
+  test("prints browser archive logs and returns archive metadata", async () => {
+    const log = vi.fn();
+    const result = await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, verbose: false },
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 5,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: async ({ log: automationLog }) => {
+          automationLog?.("[browser] Archived ChatGPT conversation after saving local artifacts.");
+          return {
+            answerText: "text",
+            answerMarkdown: "markdown",
+            tookMs: 1,
+            answerTokens: 1,
+            answerChars: 4,
+            archive: {
+              mode: "auto" as const,
+              attempted: true,
+              archived: true,
+              conversationUrl: "https://chatgpt.com/c/abc",
+            },
+          };
+        },
+      },
+    );
+
+    expect(log.mock.calls.some((call) => String(call[0]).includes("Archived ChatGPT"))).toBe(true);
+    expect(result.archive).toMatchObject({
+      archived: true,
+      conversationUrl: "https://chatgpt.com/c/abc",
+    });
+  });
+
+  test("prints browser control guidance even when not verbose", async () => {
+    const log = vi.fn();
+    await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, verbose: false },
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 5,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: async ({ log: automationLog }) => {
+          automationLog?.(
+            "[browser] Browser control: launch visible Chrome; may focus/control the browser UI.",
+          );
+          automationLog?.(
+            "[browser] Browser guidance: Use --browser-attach-running to reduce desktop disruption.",
+          );
+          automationLog?.("[browser] Prompt textarea ready");
+          return {
+            answerText: "text",
+            answerMarkdown: "markdown",
+            tookMs: 1,
+            answerTokens: 1,
+            answerChars: 4,
+          };
+        },
+      },
+    );
+
+    expect(log.mock.calls.some((call) => String(call[0]).includes("Browser control"))).toBe(true);
+    expect(log.mock.calls.some((call) => String(call[0]).includes("Browser guidance"))).toBe(true);
+    expect(log.mock.calls.some((call) => String(call[0]).includes("Prompt textarea ready"))).toBe(
+      false,
+    );
   });
 
   test("passes fallback submission through to browser runner", async () => {
