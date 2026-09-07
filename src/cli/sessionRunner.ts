@@ -150,7 +150,7 @@ export async function performSessionRun({
       );
       const outputArtifacts = await copyBrowserOutputArtifacts({
         outputPath: writtenOutputPath,
-        savedFiles: result.savedFiles,
+        savedFiles: runOptions.writeArtifacts ? result.savedFiles : undefined,
         log,
       });
       const browserWarnings = [...(result.warnings ?? []), ...outputArtifacts.warnings];

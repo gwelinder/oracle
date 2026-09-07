@@ -1187,6 +1187,21 @@ describe("performSessionRun", () => {
         version: cliVersion,
       });
 
+      expect(fs.readFileSync(answerPath, "utf8")).toBe("sandbox:/mnt/data/report.md\n");
+      expect(fs.existsSync(path.join(outputDir, "report-2.md"))).toBe(false);
+      expect(fsPromises.copyFile).not.toHaveBeenCalled();
+
+      await performSessionRun({
+        sessionMeta: baseSessionMeta,
+        runOptions: { ...baseRunOptions, writeOutputPath: answerPath, writeArtifacts: true },
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: tmpDir,
+        log,
+        write,
+        version: cliVersion,
+      });
+
       const adjacentPath = path.join(outputDir, "report-2.md");
       expect(fs.readFileSync(answerPath, "utf8")).toBe("sandbox:/mnt/data/report.md\n");
       expect(fs.readFileSync(canonicalPath)).toEqual(canonicalBytes);
@@ -1211,7 +1226,7 @@ describe("performSessionRun", () => {
       const failureAnswerPath = path.join(failureOutputDir, "answer.md");
       await performSessionRun({
         sessionMeta: baseSessionMeta,
-        runOptions: { ...baseRunOptions, writeOutputPath: failureAnswerPath },
+        runOptions: { ...baseRunOptions, writeOutputPath: failureAnswerPath, writeArtifacts: true },
         mode: "browser",
         browserConfig: { chromePath: null },
         cwd: tmpDir,

@@ -1,15 +1,8 @@
 #!/usr/bin/env node
 import "dotenv/config";
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
 import type { OptionValues } from "commander";
-// Allow `npx @steipete/oracle oracle-mcp` to resolve the MCP server even though npx runs the default binary.
-if (process.argv[2] === "oracle-mcp") {
-  const { startMcpServer } = await import("../src/mcp/server.js");
-  await startMcpServer();
-  process.exit(0);
-}
 import { resolveEngine, type EngineMode, defaultWaitPreference } from "../src/cli/engine.js";
 import { shouldRequirePrompt } from "../src/cli/promptRequirement.js";
 import { resolveDashPrompt } from "../src/cli/stdin.js";
@@ -52,6 +45,7 @@ import {
 import { copyToClipboard } from "../src/cli/clipboard.js";
 import { buildMarkdownBundle } from "../src/cli/markdownBundle.js";
 import { shouldDetachSession, stopDetachedWorker } from "../src/cli/detach.js";
+import { launchDetachedSession } from "../src/cli/detachedSession.js";
 import { applyHiddenAliases } from "../src/cli/hiddenAliases.js";
 import type { BrowserSessionRunnerDeps } from "../src/browser/sessionRunner.js";
 import { isMediaFile } from "../src/browser/prompt.js";
@@ -170,6 +164,7 @@ interface CliOptions extends OptionValues {
   output?: string;
   aspect?: string;
   geminiShowThoughts?: boolean;
+  geminiFallback?: boolean;
   copyMarkdown?: boolean;
   copy?: boolean;
   verbose?: boolean;
@@ -192,6 +187,7 @@ interface CliOptions extends OptionValues {
   showModelId?: boolean;
   retainHours?: number;
   writeOutput?: string;
+  writeArtifacts?: boolean;
   writeOutputPath?: string;
   allowPartial?: boolean;
   partial?: "fail" | "ok";
@@ -583,6 +579,11 @@ program
     "--write-output <path>",
     "Write only the final assistant message to this file (overwrites; multi-model appends .<model> before the extension).",
   )
+  .option(
+    "--write-artifacts",
+    "Also export captured browser files beside --write-output without overwriting existing files (browser runs only).",
+    false,
+  )
   .option("--allow-partial", "Exit 0 for multi-model runs when at least one model succeeds.", false)
   .addOption(
     new Option("--partial <mode>", "Multi-model failure policy (fail | ok).")
@@ -875,13 +876,13 @@ program
   .addOption(
     new Option(
       "--browser-bundle-files",
-      "Bundle all attachments into a single archive before uploading.",
+      "Force one browser upload bundle; auto/zip includes all resolved files. Multi-file text/source uploads already bundle by default (flattened text unless ZIP is selected).",
     ).default(false),
   )
   .addOption(
     new Option(
       "--browser-bundle-format <format>",
-      "Bundle format for browser uploads when files are bundled: auto (default), text, or zip.",
+      "Bundle format for browser uploads: auto (flattened text for text-only, ZIP when raw files are present), text, or zip.",
     )
       .choices(["auto", "text", "zip"])
       .default("auto"),
@@ -916,6 +917,10 @@ program
       "--gemini-show-thoughts",
       "Display Gemini thinking process (Gemini web/cookie mode only).",
     ).default(false),
+  )
+  .option(
+    "--no-gemini-fallback",
+    "Fail if the requested Gemini web model is unavailable instead of using Flash-Lite.",
   )
   .option(
     "--retain-hours <hours>",
@@ -1407,6 +1412,7 @@ function buildRunOptions(
     background: overrides.background ?? undefined,
     renderPlain: overrides.renderPlain ?? options.renderPlain ?? false,
     writeOutputPath: overrides.writeOutputPath ?? options.writeOutputPath,
+    writeArtifacts: overrides.writeArtifacts ?? options.writeArtifacts ?? false,
   };
 }
 
@@ -1710,6 +1716,7 @@ function buildRunOptionsFromMetadata(metadata: SessionMetadata): RunOracleOption
     background: stored.background,
     renderPlain: stored.renderPlain,
     writeOutputPath: stored.writeOutputPath,
+    writeArtifacts: stored.writeArtifacts,
   };
 }
 
@@ -2140,6 +2147,12 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     }
   }
   const activeModel = resolvedOptions.model;
+  if (options.writeArtifacts && engine !== "browser") {
+    throw new Error("--write-artifacts requires --engine browser.");
+  }
+  if (options.writeArtifacts && !resolvedOptions.writeOutputPath) {
+    throw new Error("--write-artifacts requires --write-output <path>.");
+  }
   if (options.reasoningMode && engine !== "api") {
     throw new Error("--reasoning-mode requires --engine api.");
   }
@@ -2288,6 +2301,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         outputPath: options.output,
         aspectRatio: options.aspect,
         showThoughts: options.geminiShowThoughts,
+        allowModelFallback: options.geminiFallback,
       }),
     };
     console.log(chalk.dim("Using Gemini web client for browser automation"));
@@ -2366,6 +2380,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       outputPath: options.output,
       aspectRatio: options.aspect,
       geminiShowThoughts: options.geminiShowThoughts,
+      geminiAllowModelFallback: options.geminiFallback,
     },
     process.cwd(),
     notifications,
@@ -2392,14 +2407,19 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   });
   const workerPid = !detachAllowed
     ? undefined
-    : await launchDetachedSession(sessionMeta.id, async (pid) => {
-        lifecycle = buildSessionLifecycle({
-          engine,
-          detached: true,
-          workerPid: pid,
-          reattachCommand: `oracle session ${sessionMeta.id}`,
-        });
-        await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+    : await launchDetachedSession({
+        sessionId: sessionMeta.id,
+        cliEntrypoint: CLI_ENTRYPOINT,
+        env: buildDetachedPerfTraceEnv(process.env, perfTraceArgs.value, sessionMeta.id),
+        prepare: async (pid) => {
+          lifecycle = buildSessionLifecycle({
+            engine,
+            detached: true,
+            workerPid: pid,
+            reattachCommand: `oracle session ${sessionMeta.id}`,
+          });
+          await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+        },
       }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         console.log(
@@ -2513,44 +2533,6 @@ async function runInteractiveSession(
   } finally {
     stream.end();
   }
-}
-
-async function launchDetachedSession(
-  sessionId: string,
-  prepare: (pid: number) => Promise<void>,
-): Promise<number> {
-  return new Promise((resolve, reject) => {
-    try {
-      const args = ["--", CLI_ENTRYPOINT, "--exec-session", sessionId];
-      const env = {
-        ...buildDetachedPerfTraceEnv(process.env, perfTraceArgs.value, sessionId),
-        ORACLE_DETACHED_START_GATE: "1",
-      };
-      const child = spawn(process.execPath, args, {
-        detached: true,
-        stdio: ["pipe", "ignore", "ignore"],
-        env,
-      });
-      child.once("error", reject);
-      child.once("spawn", async () => {
-        if (child.pid === undefined) {
-          reject(new Error("Detached session worker started without a process ID."));
-          return;
-        }
-        try {
-          await prepare(child.pid);
-          child.stdin.end("ready\n");
-          child.unref();
-          resolve(child.pid);
-        } catch (error) {
-          child.kill();
-          reject(error);
-        }
-      });
-    } catch (error) {
-      reject(error);
-    }
-  });
 }
 
 async function waitForDetachedStartGate(): Promise<void> {
@@ -2684,6 +2666,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
         outputPath: storedOptions.outputPath,
         aspectRatio: storedOptions.aspectRatio,
         showThoughts: storedOptions.geminiShowThoughts,
+        allowModelFallback: storedOptions.geminiAllowModelFallback,
       }),
     };
     console.log(chalk.dim("Using Gemini web client for browser automation"));
@@ -2717,6 +2700,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
       outputPath: storedOptions.outputPath,
       aspectRatio: storedOptions.aspectRatio,
       geminiShowThoughts: storedOptions.geminiShowThoughts,
+      geminiAllowModelFallback: storedOptions.geminiAllowModelFallback,
     },
     cwd,
     notifications,
@@ -2746,14 +2730,19 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
   });
   const workerPid = !detachAllowed
     ? undefined
-    : await launchDetachedSession(sessionMeta.id, async (pid) => {
-        lifecycle = buildSessionLifecycle({
-          engine,
-          detached: true,
-          workerPid: pid,
-          reattachCommand: `oracle session ${sessionMeta.id}`,
-        });
-        await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+    : await launchDetachedSession({
+        sessionId: sessionMeta.id,
+        cliEntrypoint: CLI_ENTRYPOINT,
+        env: buildDetachedPerfTraceEnv(process.env, perfTraceArgs.value, sessionMeta.id),
+        prepare: async (pid) => {
+          lifecycle = buildSessionLifecycle({
+            engine,
+            detached: true,
+            workerPid: pid,
+            reattachCommand: `oracle session ${sessionMeta.id}`,
+          });
+          await sessionStore.updateSession(sessionMeta.id, { lifecycle });
+        },
       }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         console.log(
@@ -2986,6 +2975,12 @@ program.action(async function (this: Command) {
 });
 
 async function main(): Promise<void> {
+  // npx runs the default binary; let the MCP transport own the alias lifetime.
+  if (process.argv[2] === "oracle-mcp") {
+    const { startMcpServer } = await import("../src/mcp/server.js");
+    await startMcpServer();
+    return;
+  }
   if (perfTraceArgs.error) {
     console.error(`error: ${perfTraceArgs.error}`);
     console.error("(use --help for usage)");
