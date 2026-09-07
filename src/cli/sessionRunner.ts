@@ -185,6 +185,7 @@ export async function performSessionRun({
           runtime: result.runtime,
           archive: result.archive,
           modelSelection: result.modelSelection,
+          thinkingSelection: result.thinkingSelection,
           warnings: browserWarnings.length > 0 ? browserWarnings : undefined,
         },
         artifacts: mergeArtifacts(

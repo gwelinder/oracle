@@ -1162,6 +1162,15 @@ describe("performSessionRun", () => {
       answerText: "sandbox:/mnt/data/report.md",
       artifacts: [savedFile],
       savedFiles: [savedFile],
+      thinkingSelection: {
+        requestedLevel: "pro",
+        status: "switched",
+        resolvedLabel: "Pro",
+        verified: true,
+        strictFailClosed: true,
+        source: "chatgpt-thinking-picker",
+        capturedAt: "2026-09-07T00:00:00Z",
+      },
     });
     vi.mocked(fsPromises.mkdir).mockImplementation(async (target, options) => {
       fs.mkdirSync(target, options);
@@ -1212,6 +1221,7 @@ describe("performSessionRun", () => {
       const successUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
       expect(successUpdate).toMatchObject({
         status: "completed",
+        browser: { thinkingSelection: { requestedLevel: "pro", verified: true } },
         artifacts: expect.arrayContaining([
           expect.objectContaining({ path: canonicalPath, sha256 }),
           expect.objectContaining({ path: adjacentPath, sha256, sizeBytes: canonicalBytes.length }),
@@ -1242,6 +1252,7 @@ describe("performSessionRun", () => {
       expect(failureUpdate).toMatchObject({
         status: "completed",
         browser: {
+          thinkingSelection: { requestedLevel: "pro", verified: true },
           warnings: [
             expect.objectContaining({
               code: "browser-output-artifact-copy-failed",

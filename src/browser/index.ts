@@ -39,6 +39,8 @@ import {
   clearPromptComposer,
   waitForAssistantResponse,
   captureAssistantMarkdown,
+  captureComposerNavigationUrl,
+  assertComposerPlusStayedInPlace,
   clearComposerAttachments,
   uploadAttachmentFile,
   waitForAttachmentCompletion,
@@ -58,7 +60,10 @@ import {
 } from "./actions/deepResearch.js";
 import { estimateTokenCount, withRetries, delay } from "./utils.js";
 import { formatElapsed } from "../oracle/format.js";
-import type { BrowserModelSelectionEvidence } from "../sessionStore.js";
+import type {
+  BrowserModelSelectionEvidence,
+  BrowserThinkingSelectionEvidence,
+} from "../sessionStore.js";
 import { CHATGPT_URL, DEFAULT_MODEL_STRATEGY } from "./constants.js";
 import type { LaunchedChrome } from "chrome-launcher";
 import { BrowserAutomationError } from "../oracle/errors.js";
@@ -1114,6 +1119,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let lastUrl: string | undefined;
   let promptSubmitted = false;
   let modelSelectionEvidence: BrowserModelSelectionEvidence | undefined;
+  let thinkingSelectionEvidence: BrowserThinkingSelectionEvidence | undefined;
   let tabLease: BrowserTabLease | null = null;
   let conversationUrlMonitor: ConversationUrlMonitor | null = null;
   const emitRuntimeHint = async (): Promise<void> => {
@@ -1673,7 +1679,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const deepResearch = config.researchMode === "deep";
     if (shouldApplyThinkingTimeSelection(config)) {
       const thinkingTargetModel = modelStrategy === "select" ? config.desiredModel : null;
-      await raceWithDisconnect(
+      thinkingSelectionEvidence = await raceWithDisconnect(
         withRetries(
           () => ensureThinkingTime(Runtime, config.thinkingTime, logger, thinkingTargetModel),
           {
@@ -1715,12 +1721,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         generatedBundle: a.generatedBundle === true,
       }));
       let inputOnlyAttachments = false;
+      let attachmentNavigationUrl: string | undefined;
       await raceWithDisconnect(clearPromptComposer(Runtime, logger));
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       if (submissionAttachments.length > 0) {
         if (!DOM) {
           throw new Error("Chrome DOM domain unavailable while uploading attachments.");
         }
+        attachmentNavigationUrl = await raceWithDisconnect(captureComposerNavigationUrl(Runtime));
         await clearComposerAttachments(Runtime, 5_000, logger);
         for (
           let attachmentIndex = 0;
@@ -1728,12 +1736,15 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           attachmentIndex += 1
         ) {
           const attachment = submissionAttachments[attachmentIndex];
+          await raceWithDisconnect(
+            assertComposerPlusStayedInPlace(Runtime, attachmentNavigationUrl),
+          );
           logger(`Uploading attachment: ${attachment.displayPath}`);
           const uiConfirmed = await uploadAttachmentFile(
             { runtime: Runtime, dom: DOM, input: Input },
             attachment,
             logger,
-            { expectedCount: attachmentIndex + 1 },
+            { expectedCount: attachmentIndex + 1, navigationUrl: attachmentNavigationUrl },
           );
           if (!uiConfirmed) {
             inputOnlyAttachments = true;
@@ -1780,6 +1791,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
+        attachmentNavigationUrl,
         onPromptSubmitted: markPromptSubmitted,
       };
       const deepResearchTargetBaseline =
@@ -1922,6 +1934,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         artifacts: savedArtifacts,
         archive,
         modelSelection: modelSelectionEvidence,
+        thinkingSelection: thinkingSelectionEvidence,
         tookMs: durationMs,
         answerTokens: tokens,
         answerChars: researchResult.text.length,
@@ -2441,6 +2454,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
+      thinkingSelection: thinkingSelectionEvidence,
       tookMs: durationMs,
       answerTokens,
       answerChars,
@@ -3060,6 +3074,7 @@ async function runRemoteBrowserMode(
   let lastUrl: string | undefined;
   let promptSubmitted = false;
   let modelSelectionEvidence: BrowserModelSelectionEvidence | undefined;
+  let thinkingSelectionEvidence: BrowserThinkingSelectionEvidence | undefined;
   let attachedExistingTab = false;
   let ownsTarget = true;
   let conversationUrlMonitor: ConversationUrlMonitor | null = null;
@@ -3281,7 +3296,7 @@ async function runRemoteBrowserMode(
     const deepResearch = config.researchMode === "deep";
     if (shouldApplyThinkingTimeSelection(config)) {
       const thinkingTargetModel = modelStrategy === "select" ? config.desiredModel : null;
-      await withRetries(
+      thinkingSelectionEvidence = await withRetries(
         () => ensureThinkingTime(Runtime, config.thinkingTime, logger, thinkingTargetModel),
         {
           retries: 2,
@@ -3305,17 +3320,24 @@ async function runRemoteBrowserMode(
         name: path.basename(a.path),
         generatedBundle: a.generatedBundle === true,
       }));
+      let attachmentNavigationUrl: string | undefined;
       await clearPromptComposer(Runtime, logger);
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
       if (submissionAttachments.length > 0) {
         if (!DOM) {
           throw new Error("Chrome DOM domain unavailable while uploading attachments.");
         }
+        attachmentNavigationUrl = await captureComposerNavigationUrl(Runtime);
         await clearComposerAttachments(Runtime, 5_000, logger);
         // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
         for (const attachment of submissionAttachments) {
+          await assertComposerPlusStayedInPlace(Runtime, attachmentNavigationUrl);
           logger(`Uploading attachment: ${attachment.displayPath}`);
-          await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
+          await uploadAttachmentViaDataTransfer(
+            { runtime: Runtime, dom: DOM, navigationUrl: attachmentNavigationUrl },
+            attachment,
+            logger,
+          );
           await delay(500);
         }
         // Scale timeout based on number of files: base 30s + 15s per additional file
@@ -3355,6 +3377,7 @@ async function runRemoteBrowserMode(
         attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
+        attachmentNavigationUrl,
         onPromptSubmitted: markPromptSubmitted,
       };
       const deepResearchTargetBaseline =
@@ -3463,6 +3486,7 @@ async function runRemoteBrowserMode(
         artifacts: savedArtifacts,
         archive,
         modelSelection: modelSelectionEvidence,
+        thinkingSelection: thinkingSelectionEvidence,
         tookMs: durationMs,
         answerTokens: tokens,
         answerChars: researchResult.text.length,
@@ -3945,6 +3969,7 @@ async function runRemoteBrowserMode(
       savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
+      thinkingSelection: thinkingSelectionEvidence,
       controllerPid: process.pid,
     };
   } catch (error) {
